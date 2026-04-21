@@ -1,0 +1,171 @@
+version: 1
+# SPEC-25 — Render mode. AUTO: use target/compiled when present, else MOCK.
+render:
+  mode: AUTO
+  fallback: PARTIAL
+  # compiled_dir: target/compiled   # override when running out of tree
+dialect: snowflake
+confidence_threshold: 0.7
+
+# ------------------------------------------------------------------ rule pack
+# Severity/tier defaults below match the built-in pack. Un-comment to override.
+rules:
+  "Q001": { enabled: true, severity: MAJOR,    tier: TIER_2_WARN }
+  "Q002": { enabled: true, severity: CRITICAL, tier: TIER_1_ENFORCED }
+  "Q003": { enabled: true, severity: MAJOR,    tier: TIER_2_WARN }
+  "Q004": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "Q005": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "Q006": { enabled: true, severity: MAJOR,    tier: TIER_1_ENFORCED }
+  "Q007": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "P001": { enabled: true, severity: CRITICAL, tier: TIER_1_ENFORCED }
+  "P002": { enabled: true, severity: MAJOR,    tier: TIER_2_WARN }
+  "P003": { enabled: true, severity: CRITICAL, tier: TIER_1_ENFORCED }
+  "P004": { enabled: true, severity: MAJOR,    tier: TIER_2_WARN }
+  "P005": { enabled: true, severity: MAJOR,    tier: TIER_2_WARN }
+  "P006": { enabled: true, severity: MAJOR,    tier: TIER_2_WARN }
+  "P007": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "P008": { enabled: true, severity: MINOR,    tier: TIER_2_WARN, params: { max_depth: 8 } }
+  "P009": { enabled: true, severity: MINOR,    tier: TIER_2_WARN, params: { threshold: 5 } }
+  "P010": { enabled: true, severity: CRITICAL, tier: TIER_1_ENFORCED }
+  "R001": { enabled: true, severity: MAJOR,    tier: TIER_1_ENFORCED, params: { threshold: 0.85 } }
+  "R002": { enabled: true, severity: MAJOR,    tier: TIER_2_WARN }
+  "R003": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "R004": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "R005": { enabled: true, severity: MINOR,    tier: TIER_2_WARN, params: { min_occurrences: 3 } }
+  "R006": { enabled: true, severity: MINOR,    tier: TIER_2_WARN, params: { min_occurrences: 3 } }
+  "A001": { enabled: true, severity: CRITICAL, tier: TIER_1_ENFORCED }
+  "A002": { enabled: true, severity: MAJOR,    tier: TIER_2_WARN, params: { threshold: 15 } }
+  "A003": { enabled: true, severity: MAJOR,    tier: TIER_1_ENFORCED }
+  "A004": { enabled: true, severity: CRITICAL, tier: TIER_1_ENFORCED }
+  "A005": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "T001": { enabled: true, severity: MAJOR,    tier: TIER_1_ENFORCED }
+  "T002": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "T003": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+  "S001": { enabled: true, severity: CRITICAL, tier: TIER_1_ENFORCED }
+  "S002": { enabled: true, severity: BLOCKER,  tier: TIER_1_ENFORCED }
+  "G001": { enabled: true, severity: MINOR,    tier: TIER_2_WARN }
+
+# ----------------------------------------------------------------- coverage
+# JaCoCo+Sonar-style dimensions:
+#   test              — fraction of models with any test
+#   test_meaningful   — fraction of models with a passing logical test
+#   test_weighted_cc  — coverage weighted by model complexity (heavy models require more)
+#   test_unit         — fraction of models with at least one unit test (dbt >= 1.8)
+#   doc               — documented model fraction
+#   complexity        — fraction of models under the warn threshold
+coverage:
+  test:             { min: 0.80 }
+  doc:              { min: 0.90 }
+  test_meaningful:  { min: 0.50 }
+  test_weighted_cc: { min: 0.60 }
+  test_unit:        { min: 0.10 }
+  complexity:       { min: 0.90 }
+  # SPEC-31 — models/paths here are removed from numerator *and* denominator.
+  # Use for vendor seeds, legacy models under retirement, etc. Each key is
+  # per-dimension so you can grant an exemption only where it's warranted.
+  exemptions:
+    test: []
+    doc: []
+    test_meaningful: []
+    test_weighted_cc: []
+    test_unit: []
+    complexity: []
+  # SPEC-22 §4.2 — weights per test class. Override to taste.
+  weights:
+    trivial: 0.0
+    structural: 0.25
+    logical: 1.0
+    unknown: 0.0
+  test_overrides:
+    logical: []
+    structural: []
+    trivial: []
+
+# ----------------------------------------------------------------- complexity
+complexity:
+  threshold_warn: 15
+  threshold_block: 30
+  include_jinja: true
+  exempt_models: []
+
+# ----------------------------------------------------------------- testing
+# SPEC-32 — distinguish dbt data tests from unit_tests (dbt 1.8+).
+testing:
+  unit_tests:
+    exempt: ["models/staging/**"]   # staging models don't need unit tests
+
+# ----------------------------------------------------------------- architecture
+# SPEC-27 — layer classifier + allowed edges. A001/A003/A005/Q006 use this.
+# Each layer is a list of glob patterns matched against the model name *or*
+# file path suffix (e.g. `staging/**` matches `models/staging/foo.sql`).
+architecture:
+  layers:
+    source:       ["sources.*"]
+    staging:      ["stg_*", "staging/**"]
+    intermediate: ["int_*", "intermediate/**"]
+    mart:         ["fct_*", "dim_*", "marts/**", "mart/**"]
+  allowed_edges:
+    - [source, staging]
+    - [staging, intermediate]
+    - [staging, mart]
+    - [intermediate, intermediate]
+    - [intermediate, mart]
+    - [mart, mart]
+
+# ----------------------------------------------------------------- adapters
+# SPEC-21 — `auto` = read report if present, otherwise try to run the tool.
+# `read` = never shell out. `run` = always run.
+adapters:
+  dbt-test:
+    enabled: true
+    mode: auto
+    # report: target/run_results.json
+    # params: { manifest: target/manifest.json, treat_warn_as_pass: true }
+  sqlfluff:
+    enabled: true
+    mode: auto
+    # report: .dbtcov/sqlfluff.json
+    # params:
+    #   dialect: snowflake
+    #   paths: ["models/"]
+    #   severity_map: {}
+
+# ----------------------------------------------------------------- reports
+# SPEC-33 — skip-check reporting granularity per reporter.
+#   summary:    only totals
+#   aggregated: totals + per-rule counts
+#   per_pair:   totals + one row per (rule, node) skip
+reports:
+  skip_detail: aggregated
+  console:   { skip_detail: aggregated }
+  json:      { skip_detail: per_pair }
+  sarif:     { skip_detail: per_pair }
+
+# ----------------------------------------------------------------- overrides
+# SPEC-31 — manual waivers for findings (reviewed code, technical debt, etc).
+# Any finding matched by `waive` on a node in `models` / `paths` / `node_ids`
+# is suppressed with a banner in all reports. Expired waivers emit G003.
+overrides: []
+  # - id: "WV-2026-001"
+  #   waive: ["Q001"]
+  #   models: ["fct_orders"]
+  #   reason: "Star allowed for API contract; reviewed by @sonia."
+  #   reviewer: "sonia"
+  #   expires: "2026-09-30"
+
+# ----------------------------------------------------------------- gate
+gate:
+  fail_on_tier: TIER_1_ENFORCED
+  fail_on_coverage_regression: true
+  thresholds:
+    testing:
+      unexecuted_tests_max: 0   # SPEC-32 §7 — tests that didn't run are hard-failed by default.
+    skips:
+      # SPEC-33 §5 — cap silent visibility loss from skipped checks.
+      parse_failed_max: null
+      render_uncertain_max: null
+      rule_error_max: 0
+      adapter_failed_max: 0
+      total_max: null
+
+exclude: []

@@ -1,0 +1,18 @@
+name: sample_project
+version: "1.0.0"
+config-version: 2
+profile: sample_project
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+snapshot-paths: ["snapshots"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+require-dbt-version: ">=1.7.0"
+
+models:
+  sample_project:
+    +materialized: view

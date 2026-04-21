@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dbt-coverage-lib"
+version = "0.1.0"
+description = "Data Quality Control Plane for Analytics Engineering — SonarQube-style static analysis + coverage for dbt projects."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "dbtcov contributors" }]
+keywords = ["dbt", "sql", "lint", "coverage", "sarif", "sonar", "quality", "data"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+dependencies = [
+    "pydantic>=2.6",
+    "ruamel.yaml>=0.18",
+    "jinja2>=3.1",
+    "sqlglot>=23.0",
+    "click>=8.1",
+    "rich>=13.7",
+    "datasketch>=1.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "mypy>=1.9",
+]
+
+[project.scripts]
+dbtcov = "dbt_coverage.cli.main:cli"
+
+[project.entry-points."dbt_coverage.rules"]
+# Built-in rules are loaded directly (not via entry-points) for MVP.
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dbt_coverage"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/dbt_coverage/templates/dbtcov.yml.template" = "dbt_coverage/templates/dbtcov.yml.template"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: tests >500ms (skipped by default unless --runslow)",
+    "requires_dbt_core: tests needing the `[dbt-core]` extra",
+    "integration: end-to-end tests touching the sample project",
+]
+filterwarnings = [
+    "default",
+    "ignore::DeprecationWarning:sqlglot.*",
+    "ignore::DeprecationWarning:datasketch.*",
+]
+
+[tool.coverage.run]
+source = ["dbt_coverage"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+strict_optional = true

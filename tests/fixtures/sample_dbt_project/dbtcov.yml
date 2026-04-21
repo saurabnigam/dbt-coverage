@@ -1,0 +1,28 @@
+version: 1
+
+dialect: postgres
+
+render:
+  mode: MOCK
+
+confidence_threshold: 0.7
+
+rules:
+  Q001:
+    enabled: true
+  Q002:
+    enabled: true
+  P001:
+    enabled: true
+  R001:
+    enabled: true
+
+coverage:
+  test:
+    min: 0.5
+  doc:
+    min: 0.5
+
+gate:
+  fail_on_tier: TIER_1_ENFORCED
+  fail_on_coverage_regression: true

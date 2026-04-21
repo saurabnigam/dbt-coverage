@@ -1,0 +1,22 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: Customer dimension
+    columns:
+      - name: customer_id
+        description: Surrogate customer id
+        tests:
+          - unique
+          - not_null
+      - name: order_count
+        description: Number of orders per customer
+
+  - name: fct_orders
+    description: Orders fact
+    columns:
+      - name: order_id
+        description: Order identifier
+        tests:
+          - unique
+          - not_null

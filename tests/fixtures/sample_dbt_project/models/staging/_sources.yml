@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    database: raw
+    schema: public
+    tables:
+      - name: customers
+        description: Raw customer data
+      - name: orders
+        description: Raw order data

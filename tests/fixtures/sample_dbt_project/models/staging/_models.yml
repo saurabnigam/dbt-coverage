@@ -1,0 +1,16 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: Staged customers
+    columns:
+      - name: customer_id
+        description: Surrogate customer id
+        tests:
+          - unique
+          - not_null
+      - name: email
+        description: Customer email address
+
+  # stg_orders: intentionally no description, no tests (to drop doc+test coverage)
+  - name: stg_orders

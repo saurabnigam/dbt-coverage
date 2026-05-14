@@ -65,11 +65,8 @@ def compute_test_meaningful_coverage(
 
 
 def _is_model(node: ParsedNode, node_id: str | None) -> bool:
-    if node_id and node_id.startswith("model."):
-        return True
-    # Fall back to node's own node_id.
-    nid = node.node_id or ""
-    return nid.startswith("model.") or True  # all parsed nodes are models today
+    nid = node_id or node.node_id or ""
+    return nid.startswith("model.")  # all parsed nodes are models today
 
 
 _STATUS_RANK: dict[TestStatus, int] = {

@@ -1,0 +1,34 @@
+---
+# ── Ingress ───────────────────────────────────────────────────────────────────
+# Requires an NGINX Ingress controller installed in the cluster.
+# Install if not present:
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.1/deploy/static/provider/cloud/deploy.yaml
+#
+# Update `host` to match your actual DNS name.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dbt-coverage-ui
+  namespace: dbt-coverage
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Uncomment to enable TLS via cert-manager (Let's Encrypt):
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  # tls:                         # Uncomment for HTTPS
+  #   - hosts:
+  #       - dbtcov.example.com
+  #     secretName: dbtcov-tls
+  rules:
+    - host: dbtcov.example.com   # ← change to your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dbt-coverage-ui
+                port:
+                  number: 80

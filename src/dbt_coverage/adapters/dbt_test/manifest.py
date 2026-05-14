@@ -122,9 +122,11 @@ def _unit_to_test(unit: dict) -> ManifestTest:
     file_path = Path(original) if original else None
     refs = _collect_refs(unit)
     # Unit tests target exactly one model via `model`.
+    # Only use short name as fallback when depends_on.nodes is empty;
+    # never let it shadow a full unique_id (model.pkg.name).
     model = unit.get("model")
-    if isinstance(model, str) and model and model not in refs:
-        refs.insert(0, model)
+    if isinstance(model, str) and model and not refs:
+        refs.append(model)
     return ManifestTest(
         unique_id=unique_id,
         name=name,

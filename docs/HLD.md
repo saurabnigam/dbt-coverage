@@ -10,21 +10,27 @@ Primary outcomes:
 - Detect data-quality, performance, architecture, refactor, testing, security, and governance issues.
 - Compute multiple coverage dimensions from declarations and execution evidence.
 - Produce machine-readable outputs for automation and human-readable outputs for triage.
+- Serve a web UI for interactive project registration, scan triggering, and historical trend analysis.
 
 ## 2. User-Facing Commands
 
-The CLI surface is organized around six commands:
+The CLI surface is organized around seven commands:
 - `dbtcov init`: scaffold a `dbtcov.yml`.
 - `dbtcov scan`: run analysis, optional gate, and emit reports.
 - `dbtcov models`: read `findings.json` and show per-model risk table.
 - `dbtcov gate`: re-evaluate gate against an existing `findings.json`.
 - `dbtcov baseline capture`: snapshot current findings into baseline JSON.
 - `dbtcov baseline diff`: compare current findings to baseline.
+- `dbtcov ui`: launch the FastAPI web dashboard (`--host`, `--port`).
 
 Recommended daily workflow:
 1. `dbtcov scan --path . --format console json sarif --out dbtcov-out`
 2. `dbtcov models --results dbtcov-out/findings.json --sort score`
 3. `dbtcov gate --results dbtcov-out/findings.json --path .`
+
+Optional interactive workflow:
+1. `dbtcov ui --host 0.0.0.0 --port 8000`
+2. Register projects and trigger scans from the browser dashboard.
 
 ## 3. System Context
 
@@ -56,6 +62,7 @@ flowchart TB
         MODELS[models]
         GATE[gate]
         BASELINE[baseline capture/diff]
+        UI_CMD[ui]
         ORCH[orchestrator.scan]
     end
 
@@ -70,6 +77,15 @@ flowchart TB
         WR[waiver resolver + baseline]
         COV[coverage aggregator]
         SUM[model summaries]
+    end
+
+    subgraph PACKS[Rule Packs]
+        QP[quality: Q001-Q007]
+        PP[performance: P001-P010]
+        AP[architecture: A001-A005]
+        RP[refactor: R002-R006]
+        SP[security/governance: S001-S002 G001]
+        TP[testing: T001-T003]
     end
 
     subgraph AD[Adapters]
@@ -88,14 +104,23 @@ flowchart TB
         MODELVIEW[models table/json]
     end
 
+    subgraph WEB[Web UI — dbt_coverage_ui]
+        FAPI[FastAPI app]
+        SQLITE[SQLite store]
+        STATIC[static: HTML/JS/CSS]
+        SCANNER_BRIDGE[scanner bridge]
+    end
+
     SCAN --> ORCH
     GATE --> RESULT
     MODELS --> JSON
+    UI_CMD --> FAPI
 
     ORCH --> DISC --> SS --> RENDER --> PARSE --> GRAPH
     PARSE --> CX
     GRAPH --> ENG
     CX --> ENG
+    PACKS --> ENG
 
     ORCH --> SCHED --> DBT
     ORCH --> SCHED --> SQLF
@@ -115,7 +140,6 @@ flowchart TB
     RESULT --> SARIF
     RESULT --> COVJSON
     JSON --> MODELVIEW
-```
 
 ## 5. End-to-End Scan Flow
 
@@ -175,7 +199,18 @@ Render behavior:
 ## 8. Coverage and Gate Model
 
 Coverage dimensions are registry-driven and include:
-- `test`, `doc`, `unit`, `column`, `pii`, `test_meaningful`, `test_weighted_cc`, `test_unit`, `complexity`.
+
+| Dimension | Description |
+|---|---|
+| `test` | models with ≥1 declared data test |
+| `doc` | column-level doc ratio across models |
+| `unit` | models with ≥1 unit test |
+| `column` | columns with ≥1 test |
+| `pii` | PII-tagged columns with masking evidence |
+| `test_meaningful` | tests passing semantic quality checks |
+| `test_weighted_cc` | test coverage weighted by cyclomatic complexity |
+| `test_unit` | unit test presence weighted by complexity |
+| `complexity` | models below complexity threshold |
 
 Gate behavior:
 - Optional during `scan` (`--fail-on tier-1|tier-2|never`) or standalone with `gate` command.
@@ -186,7 +221,20 @@ Fatal scan exits are reserved for structural failures:
 - Exit 2: no models discovered.
 - Exit 3: parse failure ratio >= 90%.
 
-## 9. Per-Model Assessment
+## 9. Rule Packs
+
+Rules are grouped into six domain packs, each registered via the rule registry:
+
+| Pack | Rules | Focus |
+|---|---|---|
+| **Quality** | Q001–Q007 | `SELECT *`, missing PK, high complexity, undocumented, naming, casing |
+| **Performance** | P001–P010 | cross join, non-SARGable, self-join, unbounded window, `COUNT(DISTINCT)` over, fan-out join, `ORDER BY` sans limit, deep CTE, over-referenced view, incremental missing key |
+| **Architecture** | A001–A005 | layer violation, fan-in, direct source reference, cycle, leaky abstraction |
+| **Refactor** | R002–R006 | god model, single-use CTE, dead CTE, duplicate expression, duplicate CASE |
+| **Security/Governance** | S001–S002, G001 | PII unmasked, hardcoded secret, missing owner |
+| **Testing** | T001–T003 | unexecuted test, no unit tests, malformed unit test |
+
+## 10. Per-Model Assessment
 
 `model_summaries` provides triage-ready model rows:
 - parse and render status
@@ -211,14 +259,106 @@ Current scoring is graduated and bounded:
 
 `dbtcov models` presents score, tests, unit, docs, parse, skips, findings, and file.
 
-## 10. Baseline and Waiver Governance
+## 11. Baseline and Waiver Governance
 
 Waivers and baseline are applied before gate and model scoring consume findings:
 - suppressed findings remain in data with provenance.
 - expired waivers can produce governance findings.
 - baseline capture/diff supports incremental rollout and CI ratcheting.
 
-## 11. Operational Notes
+## 12. Web UI (`dbtcov ui`)
+
+The optional web dashboard (`dbt_coverage_ui` package) is served via FastAPI and Uvicorn:
+- **Project registry**: register dbt project paths and names; stored in SQLite (`~/.dbtcov-ui/`).
+- **Scan trigger**: POST `/projects/{id}/scan` runs `orchestrator.scan` in a background thread, writing artifacts to `~/.dbtcov-ui/runs/<project>/<run>/`.
+- **Stale run recovery**: on startup, any `running` rows whose artifacts exist are promoted to `success`.
+- **Trend charts**: Quality Trend (mean score, findings, critical) and Coverage Trend (test%, doc%, unit%) rendered from historical run rows.
+- **Run history table**: columns — started, status, mode, score, findings, critical, at-risk, test%, duration.
+- **Config editor**: inline YAML editor for `dbtcov.yml` per project.
+
+Data model in SQLite:
+- `projects(id, name, path, created_at, last_run_id)`
+- `runs(id, project_id, status, started_at, finished_at, render_mode, score_*, findings_*, coverage_*, ...)`
+
+Optional dependencies: `fastapi>=0.110`, `uvicorn[standard]>=0.27`.
+
+### 12a. Infrastructure Diagram — Web UI Runtime
+
+```mermaid
+flowchart TB
+    subgraph BROWSER["Browser (any)"]
+        HTML["index.html\nAlpine.js + Tailwind"]
+        JS["app.js\nfetch /api/*"]
+    end
+
+    subgraph SERVER["dbtcov ui process\n(Uvicorn + FastAPI)"]
+        direction TB
+        FAPI["FastAPI app\n(app.py)"]
+        subgraph ROUTES["HTTP routes"]
+            R_META["GET /api/meta"]
+            R_PROJ["GET/POST /api/projects"]
+            R_RUNS["GET /api/projects/:id/runs"]
+            R_SCAN["POST /api/projects/:id/scan"]
+            R_COV["GET /api/projects/:id/runs/:rid/coverage"]
+            R_PMC["GET /api/projects/:id/runs/:rid/per-model-coverage"]
+            R_ART["GET /api/projects/:id/runs/:rid/artifact/:file"]
+        end
+        BRIDGE["scanner bridge\n(background thread)"]
+        ORCH["orchestrator.scan()"]
+        STATIC["static files\n/static/*"]
+    end
+
+    subgraph STORAGE["Local disk (~/.dbtcov-ui/)"]
+        SQLITE[("SQLite\ndbtcov.db\n─────────\nprojects\nruns")]
+        ARTIFACTS["artifacts/\nruns/<project>/<run>/\n  findings.json\n  coverage.json\n  findings.sarif\n  console.txt"]
+    end
+
+    subgraph DBT_PROJECT["dbt project (registered path)"]
+        SQL["models/**/*.sql"]
+        YAML["schema.yml / dbtcov.yml"]
+        TARGET["target/ (compiled, optional)"]
+    end
+
+    HTML -->|HTTP GET /| FAPI
+    JS -->|REST calls| ROUTES
+    ROUTES --> FAPI
+    FAPI --> SQLITE
+    FAPI --> ARTIFACTS
+    R_SCAN --> BRIDGE
+    BRIDGE --> ORCH
+    ORCH --> DBT_PROJECT
+    ORCH -->|writes| ARTIFACTS
+    ORCH -->|updates row| SQLITE
+    STATIC --> HTML
+```
+
+**Request path for a scan:**
+1. Browser POSTs to `/api/projects/{id}/scan`
+2. FastAPI inserts a `running` row in SQLite and spawns a background thread
+3. Thread calls `orchestrator.scan(project_path, ...)` — same engine as `dbtcov scan` CLI
+4. On completion, artifacts are written to `~/.dbtcov-ui/runs/<project>/<run>/` and the SQLite row is updated to `success`
+5. Browser polls `/api/projects/{id}` (every 3 s) until status changes, then fetches coverage + findings
+
+**Kubernetes deployment** (see `k8s/`):
+```
+Browser → Ingress → ClusterIP Service (port 8000) → Pod (uvicorn, port 8000)
+                                                         └─ hostPath / PVC for ~/.dbtcov-ui/
+```
+
+## 13. Deployment
+
+### CI (Jenkinsfile)
+A Jenkinsfile drives Docker image build and push to a JFrog container registry, versioned by `IMAGE_TAG`.
+
+### Kubernetes (`k8s/`)
+Three manifests deploy the web UI to a `dbt-coverage` namespace:
+- `deployment.yaml`: 2-replica `RollingUpdate`, pulls from JFrog registry via `imagePullSecrets`.
+- `service.yaml`: ClusterIP service exposing port 8000.
+- `ingress.yaml`: Ingress rule routing to the service.
+
+Environment variable `DBTCOV_UI_HOME` overrides the default `~/.dbtcov-ui/` data root.
+
+## 14. Operational Notes
 
 Useful scan options:
 - adapter controls: `--adapter`, `--no-adapter`, `--adapter-mode`, `--adapter-report`, `--list-adapters`

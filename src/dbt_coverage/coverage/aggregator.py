@@ -13,8 +13,11 @@ from dbt_coverage.scanners import ProjectIndex
 from .complexity_metric import compute_complexity_summary
 from .doc_coverage import compute_doc_coverage
 from .test_cc_weighted_coverage import compute_test_cc_weighted_coverage
+from .test_column_coverage import compute_test_column_coverage
+from .test_column_meaningful_coverage import compute_test_column_meaningful_coverage
 from .test_coverage import compute_test_coverage
 from .test_meaningful_coverage import compute_test_meaningful_coverage
+from .test_unit_cc_weighted_coverage import compute_test_unit_cc_weighted_coverage
 from .test_unit_coverage import compute_test_unit_coverage
 
 if TYPE_CHECKING:
@@ -43,6 +46,10 @@ DimensionFn = Callable[[AggregatorContext], CoverageMetric]
 DIMENSIONS: dict[str, DimensionFn] = {
     "test": lambda ctx: compute_test_coverage(ctx.project),
     "doc": lambda ctx: compute_doc_coverage(ctx.project),
+    "column_test": lambda ctx: compute_test_column_coverage(ctx.project),
+    "column_test_meaningful": lambda ctx: compute_test_column_meaningful_coverage(
+        ctx.project, ctx.test_results, ctx.config  # type: ignore[arg-type]
+    ),
     "test_meaningful": lambda ctx: compute_test_meaningful_coverage(
         ctx.parsed_nodes, ctx.test_results, ctx.config  # type: ignore[arg-type]
     ),
@@ -53,6 +60,9 @@ DIMENSIONS: dict[str, DimensionFn] = {
     # older dbt projects so the zero is explained rather than hidden.
     "test_unit": lambda ctx: compute_test_unit_coverage(
         ctx.parsed_nodes, ctx.test_results, dbt_version=ctx.dbt_version
+    ),
+    "test_unit_weighted_cc": lambda ctx: compute_test_unit_cc_weighted_coverage(
+        ctx.parsed_nodes, ctx.complexity, ctx.test_results, ctx.config, dbt_version=ctx.dbt_version
     ),
     "complexity": lambda ctx: compute_complexity_summary(
         ctx.parsed_nodes, ctx.complexity, ctx.config  # type: ignore[arg-type]
@@ -84,7 +94,7 @@ def compute_all(
             _LOG.warning("Unknown coverage dimension %r (skipped)", dim)
             continue
         # Dims requiring config silently skip if context has none.
-        needs_config = dim in {"test_meaningful", "test_weighted_cc", "complexity"}
+        needs_config = dim in {"test_meaningful", "test_weighted_cc", "complexity", "column_test_meaningful", "test_unit_weighted_cc"}
         if needs_config and ctx.config is None:
             _LOG.debug("Skipping dimension %r: no config available", dim)
             continue

@@ -32,8 +32,10 @@ class Q005UndocumentedColumnRule(BaseRule):
         yml = getattr(entry, "yml_meta", None)
         declared = {c.name.lower() for c in (yml.columns if yml else [])}
         ignore_prefixes = tuple(ctx.params.get("ignore_prefixes") or ("_",))
+        max_per_model = int(ctx.params.get("max_per_model", 15))
 
         seen_alias: set[str] = set()
+        count = 0
         for select in node.ast.find_all(exp.Select):
             # Only consider the outermost SELECT: CTE projections aren't the
             # final model surface.
@@ -50,6 +52,28 @@ class Q005UndocumentedColumnRule(BaseRule):
                     continue
                 if alias.startswith(ignore_prefixes):
                     continue
+                count += 1
+                if count > max_per_model:
+                    remaining = sum(
+                        1
+                        for p in select.expressions or []
+                        if (a := _alias_of(p))
+                        and a.lower() not in seen_alias
+                        and a.lower() not in declared
+                        and not a.startswith(ignore_prefixes)
+                    )
+                    yield self.make_finding(
+                        ctx,
+                        line=1,
+                        column=1,
+                        message=(
+                            f"Model `{entry.name}` has {remaining + count} undocumented "
+                            f"columns (showing first {max_per_model}). "
+                            "Add a `columns:` block in schema.yml."
+                        ),
+                        code_context=f"Q005:__summary__:{entry.name}",
+                    )
+                    break
                 line = node.line_map.get(_line_of(projection) or 1, 1)
                 yield self.make_finding(
                     ctx,

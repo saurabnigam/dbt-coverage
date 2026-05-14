@@ -154,8 +154,19 @@ overrides: []
   #   expires: "2026-09-30"
 
 # ----------------------------------------------------------------- gate
+# CI integration:
+#   dbtcov scan . --fail-on tier-1 --baseline .dbtcov/baseline.json \
+#                 --format sarif --format json --out dbtcov-out
+#
+# fail_on_new_only: true  → PRs only fail on findings that are NEW relative to
+#                           the baseline captured on main.  Legacy debt is
+#                           suppressed until you fix it on its own schedule.
+#
+# To capture/refresh the baseline (run once on main, then keep it in git):
+#   dbtcov baseline capture --out .dbtcov/baseline.json
 gate:
   fail_on_tier: TIER_1_ENFORCED
+  fail_on_new_only: true             # recommended for CI on PRs
   fail_on_coverage_regression: true
   thresholds:
     testing:

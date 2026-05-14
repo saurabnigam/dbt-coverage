@@ -36,6 +36,11 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.4",
     "mypy>=1.9",
+    "httpx>=0.27",
+]
+ui = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
 ]
 
 [project.scripts]
@@ -45,10 +50,13 @@ dbtcov = "dbt_coverage.cli.main:cli"
 # Built-in rules are loaded directly (not via entry-points) for MVP.
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/dbt_coverage"]
+packages = ["src/dbt_coverage", "src/dbt_coverage_ui"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/dbt_coverage/templates/dbtcov.yml.template" = "dbt_coverage/templates/dbtcov.yml.template"
+"src/dbt_coverage_ui/static/index.html" = "dbt_coverage_ui/static/index.html"
+"src/dbt_coverage_ui/static/app.js" = "dbt_coverage_ui/static/app.js"
+"src/dbt_coverage_ui/static/styles.css" = "dbt_coverage_ui/static/styles.css"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

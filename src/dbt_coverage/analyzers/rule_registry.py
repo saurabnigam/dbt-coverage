@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.util
 import logging
+import sys
 from dataclasses import dataclass
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import Any
 
 from dbt_coverage.core import ConfigError, Severity, Tier
@@ -100,8 +103,46 @@ def _builtin_rule_classes() -> list[type]:
     ]
 
 
-def discover_rules() -> list[type]:
-    """Built-ins + third-party via ``dbt_coverage.rules`` entry-point group."""
+def _local_rule_classes(project_root: Path | None) -> list[type]:
+    """Discover custom rules from ``<project_root>/dbtcov_rules/*.py``.
+
+    Each .py file is loaded as a module. Any top-level class that has an ``id``
+    attribute and a ``check`` callable is treated as a rule.
+    """
+    if project_root is None:
+        return []
+    rules_dir = project_root / "dbtcov_rules"
+    if not rules_dir.is_dir():
+        return []
+    classes: list[type] = []
+    for py_file in sorted(rules_dir.glob("*.py")):
+        if py_file.name.startswith("_"):
+            continue
+        module_name = f"dbtcov_rules.{py_file.stem}"
+        spec = importlib.util.spec_from_file_location(module_name, py_file)
+        if spec is None or spec.loader is None:
+            _LOG.warning("Cannot load rule file %s — skipping", py_file)
+            continue
+        try:
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = mod
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        except Exception as e:
+            _LOG.warning("Error loading local rule %s: %s", py_file.name, e)
+            continue
+        for attr_name in dir(mod):
+            obj = getattr(mod, attr_name)
+            if (
+                isinstance(obj, type)
+                and hasattr(obj, "id")
+                and callable(getattr(obj, "check", None))
+            ):
+                classes.append(obj)
+    return classes
+
+
+def discover_rules(project_root: Path | None = None) -> list[type]:
+    """Built-ins + third-party via ``dbt_coverage.rules`` entry-point group + local rules."""
     found: dict[str, type] = {}
 
     for cls in _builtin_rule_classes():
@@ -132,6 +173,15 @@ def discover_rules() -> list[type]:
             continue
         if rid in found:
             raise ConfigError(f"Duplicate rule id across plugins: {rid!r}")
+        found[rid] = cls
+
+    # Local project rules (override or extend)
+    for cls in _local_rule_classes(project_root):
+        rid = getattr(cls, "id", None)
+        if not rid:
+            continue
+        if rid in found:
+            _LOG.info("Local rule %r overrides existing rule", rid)
         found[rid] = cls
 
     return list(found.values())

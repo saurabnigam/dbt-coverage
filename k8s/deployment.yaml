@@ -1,0 +1,85 @@
+---
+# ── Deployment ────────────────────────────────────────────────────────────────
+# Update IMAGE_TAG in the Jenkinsfile (or override with kustomize/helm) for
+# each release. The imagePullSecrets name must match the secret created by:
+#
+#   kubectl create secret docker-registry jfrog-registry \
+#     --docker-server=<JFROG_HOST>       \
+#     --docker-username=<user>           \
+#     --docker-password=<api-key>        \
+#     --namespace=dbt-coverage
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dbt-coverage-ui
+  namespace: dbt-coverage
+  labels:
+    app: dbt-coverage-ui
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dbt-coverage-ui
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: dbt-coverage-ui
+    spec:
+      # ── Pull from JFrog private Docker registry ──
+      imagePullSecrets:
+        - name: jfrog-registry          # created once via kubectl (see above)
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+
+      containers:
+        - name: dbt-coverage-ui
+          # Replaced by Jenkinsfile at deploy time:
+          #   kubectl set image deployment/dbt-coverage-ui \
+          #     dbt-coverage-ui=<JFROG_HOST>/<REPO>/dbt-coverage:<VERSION>
+          image: JFROG_HOST/JFROG_DOCKER_REPO/dbt-coverage:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: DBTCOV_UI_HOME
+              value: /data
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /api/meta
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/meta
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+
+      volumes:
+        - name: data
+          emptyDir: {}          # swap for a PersistentVolumeClaim if you need data persistence

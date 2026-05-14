@@ -1,0 +1,250 @@
+version: 2
+
+# ============================================================
+# Quality Score Scenarios — schema.yml
+#
+# Each model is annotated with the expected quality score and
+# the exact penalty breakdown that produces it.
+# Run:  dbtcov scan --project-dir tests/fixtures/quality_score_scenarios
+# ============================================================
+
+models:
+
+  # ----------------------------------------------------------
+  # SCORE = 100  (perfect — all dimensions green)
+  # Penalty: no_test=0  doc=0  tier1=0  tier2=0  unexec=0  parse=0  skips=0
+  # ----------------------------------------------------------
+  - name: model_perfect
+    description: >
+      Fully documented, tested model with no violations.
+      Expected quality score: 100.
+    columns:
+      - name: order_id
+        description: Surrogate primary key for the order.
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Foreign key to the customer dimension.
+        tests:
+          - not_null
+      - name: amount
+        description: Gross order amount in USD.
+        tests:
+          - not_null
+      - name: status
+        description: Current lifecycle status of the order.
+        tests:
+          - not_null
+      - name: ordered_at
+        description: Timestamp when the order was placed.
+        tests:
+          - not_null
+    tests:
+      # singular test → classified as LOGICAL → test_meaningful covered
+      - relationships:
+          to: ref('model_no_test')
+          field: customer_id
+
+  # ----------------------------------------------------------
+  # SCORE = 75  (no tests)
+  # Penalty: no_test=25  doc=0  tier1=0  tier2=0
+  # ----------------------------------------------------------
+  - name: model_no_test
+    description: >
+      Fully documented model but with zero tests declared.
+      Expected quality score: 75.
+      Penalty: no_test_penalty = 25.
+    columns:
+      - name: customer_id
+        description: Surrogate primary key for the customer.
+      - name: first_name
+        description: Customer first name.
+      - name: last_name
+        description: Customer last name.
+      - name: signup_date
+        description: Date the customer signed up.
+    # ← intentionally no tests:
+
+  # ----------------------------------------------------------
+  # SCORE = 85  (no documentation)
+  # Penalty: no_test=0  doc=15  tier1=0  tier2=0
+  # model_no_doc has NO entry here → doc_coverage computed as (0, 1)
+  # ----------------------------------------------------------
+  - name: model_no_doc
+    # ← intentionally no description
+    columns:
+      - name: product_id
+        # ← intentionally no description on columns either
+        tests:
+          - not_null
+          - unique
+      - name: name
+        tests:
+          - not_null
+      - name: price
+        tests:
+          - not_null
+      - name: category
+        tests:
+          - not_null
+
+  # ----------------------------------------------------------
+  # SCORE = 60  (no doc + no test)
+  # Penalty: no_test=25  doc=15  tier1=0  tier2=0
+  # ----------------------------------------------------------
+  - name: model_no_test_no_doc
+    # ← intentionally no description
+    columns:
+      - name: session_id
+      - name: user_id
+      - name: page_url
+      - name: event_ts
+    # ← intentionally no tests
+
+  # ----------------------------------------------------------
+  # SCORE = 100  (trivial tests only, but test_coverage = covered)
+  # Penalty: no_test=0 (YAML has tests)  doc=0  tier1=0  tier2=0
+  #
+  # Note: test_meaningful_coverage = 0% (not_null/unique are TRIVIAL)
+  # but this does NOT directly deduct from quality score.
+  # ----------------------------------------------------------
+  - name: model_trivial_tests_only
+    description: >
+      Documented model with only not_null and unique tests.
+      These are TRIVIAL in the classifier (weight=0.0), so
+      test_meaningful_coverage = 0%, but the quality score quality
+      score is 100 because YAML test declarations exist.
+      Expected quality score: 100.
+    columns:
+      - name: inventory_id
+        description: Surrogate primary key.
+        tests:
+          - unique
+          - not_null
+      - name: product_id
+        description: FK to product.
+        tests:
+          - not_null
+      - name: warehouse_id
+        description: FK to warehouse.
+        tests:
+          - not_null
+      - name: qty_on_hand
+        description: Quantity currently in stock.
+        tests:
+          - not_null
+
+  # ----------------------------------------------------------
+  # SCORE = 91  (column documentation gaps reduce doc_ratio)
+  # doc_ratio = 2/5 = 0.4:
+  #   - model description: 1 covered, 1 total
+  #   - 4 columns: only payment_id has description (1 covered, 4 total)
+  # doc_penalty = round((1 - 0.4) × 15) = round(9) = 9
+  # Expected score = 100 - 9 = 91.
+  #
+  # Key insight: doc_ratio is not just model-level.
+  # Column descriptions also contribute to (covered, total) in the doc dimension.
+  # ----------------------------------------------------------
+  - name: model_partial_doc
+    description: >
+      Model-level description is present, but 3 of 4 columns are undocumented.
+      doc_ratio = 2 covered / 5 total = 0.4 (model desc + 1 column desc).
+      doc_penalty = round((1 - 0.4) × 15) = 9.
+      Expected quality score = 100 - 9 = 91.
+      This scenario shows that column-level documentation gaps DO reduce the
+      quality score, not just model-level description presence.
+    columns:
+      - name: payment_id
+        description: Surrogate primary key for the payment.
+        tests:
+          - unique
+          - not_null
+      - name: order_id
+        # ← no description — but column doc gaps don't reduce quality score
+        tests:
+          - not_null
+      - name: amount
+        tests:
+          - not_null
+      - name: payment_method
+        tests:
+          - not_null
+
+  # ----------------------------------------------------------
+  # SCORE depends on which rules fire (see model SQL comments)
+  # Q001 (SELECT *) fires as tier-2 → penalty = 3
+  # Expected score = 97.
+  # ----------------------------------------------------------
+  - name: model_with_tier1_violations
+    description: >
+      Model intentionally written with a final SELECT * to trigger Q001
+      (SELECT * rule, tier-2). With noise rules (G001, Q002, Q004, R003)
+      disabled in dbtcov.yml: score = 100 - 3 = 97.
+    columns:
+      - name: order_id
+        description: Order primary key.
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: FK to customer.
+        tests:
+          - not_null
+      - name: amount
+        description: Order amount.
+        tests:
+          - not_null
+      - name: status
+        description: Order status.
+        tests:
+          - not_null
+
+  # ----------------------------------------------------------
+  # SCORE = 94 (Q001 + Q003 both tier2 → -3 -3 = -6)
+  # CC = 17 > threshold_warn 15 → complexity_coverage = not_covered
+  # ----------------------------------------------------------
+  - name: model_high_complexity
+    description: >
+      Model with intentionally high cyclomatic complexity (many CASE branches,
+      CC=17 > threshold_warn=15). Final SELECT * also triggers Q001.
+      Q001 (tier2) + Q003 (tier2) → -6 → expected score = 94.
+      complexity_coverage dimension: not_covered.
+    columns:
+      - name: order_id
+        description: Order primary key.
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: FK to customer.
+        tests:
+          - not_null
+      - name: amount
+        description: Order amount.
+        tests:
+          - not_null
+      - name: status
+        description: Raw status code.
+        tests:
+          - not_null
+      - name: region
+        description: Geographic region.
+        tests:
+          - not_null
+      - name: channel
+        description: Sales channel (online/store).
+        tests:
+          - not_null
+      - name: status_label
+        description: Human-readable order status label.
+        tests:
+          - not_null
+      - name: segment
+        description: Region-channel segment code.
+        tests:
+          - not_null
+      - name: order_tier
+        description: Order size tier derived from amount.
+        tests:
+          - not_null

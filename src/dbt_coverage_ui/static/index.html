@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dbtcov — Quality Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+<link rel="stylesheet" href="/static/styles.css" />
+<style>
+.th-tip { position: relative; cursor: help; }
+.th-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e293b;
+  color: #f1f5f9;
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: normal;
+  width: 260px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.25);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s;
+  z-index: 9999;
+  line-height: 1.4;
+}
+.th-tip:hover::after { opacity: 1; }
+.th-tip[data-tip=""]:hover::after { display: none; }
+/* wider tooltip for dimension cards which have longer descriptions */
+.dim-card-tip::after { width: 320px; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800" x-data="dbtcovApp()" x-init="init()">
+
+<!-- top bar -->
+<header class="bg-slate-900 text-white shadow-md">
+  <div class="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="text-xl font-bold tracking-tight">dbtcov</div>
+      <div class="text-xs px-2 py-0.5 rounded bg-emerald-600">Quality Dashboard</div>
+    </div>
+    <nav class="flex gap-3 text-sm">
+      <button @click="view='projects'; selectedProject=null"
+              :class="view==='projects' ? 'bg-slate-700' : ''"
+              class="px-3 py-1 rounded hover:bg-slate-700">Projects</button>
+      <button @click="openRegister()" class="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500">+ Register Project</button>
+    </nav>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-6 py-8">
+
+<!-- ===================== PROJECTS LIST ===================== -->
+<section x-show="view==='projects'" x-cloak>
+  <h1 class="text-2xl font-bold mb-4">Registered Projects</h1>
+  <p class="text-sm text-slate-600 mb-6">
+    Click a project to view its run history and quality trends.
+    All scan artifacts are stored under <code class="bg-slate-200 px-1 rounded">~/.dbtcov-ui/runs/</code>.
+  </p>
+
+  <div x-show="projects.length===0" class="bg-white p-8 rounded-lg shadow text-center text-slate-500">
+    No projects yet. Click <strong>+ Register Project</strong> to get started.
+  </div>
+
+  <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <template x-for="p in projects" :key="p.id">
+      <div class="bg-white rounded-lg shadow hover:shadow-lg transition cursor-pointer"
+           @click="openProject(p.id)">
+        <div class="p-5">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="font-bold text-lg" x-text="p.name"></div>
+              <div class="text-xs text-slate-500 truncate" :title="p.path" x-text="p.path"></div>
+            </div>
+            <button @click.stop="deleteProject(p.id)"
+                    class="text-slate-400 hover:text-red-500 text-sm">✕</button>
+          </div>
+          <div class="mt-4 grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <div class="text-slate-500 text-xs">Last Score</div>
+              <div class="font-semibold text-lg" :class="scoreColor(p.last_score)"
+                   x-text="p.last_score!=null ? Math.round(p.last_score) : '—'"></div>
+            </div>
+            <div>
+              <div class="text-slate-500 text-xs">Last Findings</div>
+              <div class="font-semibold text-lg" x-text="p.last_findings ?? '—'"></div>
+            </div>
+          </div>
+          <div class="mt-3 text-xs text-slate-500">
+            <span x-text="p.last_run_started ? 'Last run: ' + fmtDate(p.last_run_started) : 'Never scanned'"></span>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+</section>
+
+<!-- ===================== PROJECT DETAIL ===================== -->
+<section x-show="view==='project' && selectedProject" x-cloak>
+  <button @click="view='projects'; loadProjects()" class="text-sm text-slate-600 hover:text-slate-900 mb-3">← Back to projects</button>
+  <div class="flex items-start justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold" x-text="selectedProject?.name"></h1>
+      <div class="text-sm text-slate-500" x-text="selectedProject?.path"></div>
+    </div>
+    <div class="flex gap-2">
+      <select x-model="renderMode" class="border rounded px-2 py-1 text-sm">
+        <option value="auto">Auto (compiled if available)</option>
+        <option value="compiled">Compiled (needs target/compiled)</option>
+        <option value="mock">Mock</option>
+      </select>
+      <button @click="openConfig()" class="bg-slate-700 text-white px-4 py-2 rounded text-sm hover:bg-slate-600">Edit Config</button>
+      <button @click="runScan()" :disabled="scanning"
+              class="bg-emerald-600 text-white px-4 py-2 rounded text-sm hover:bg-emerald-500 disabled:opacity-50">
+        <span x-show="!scanning">▶ Run Scan</span>
+        <span x-show="scanning">Scanning…</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="grid lg:grid-cols-3 gap-6 mb-6">
+    <!-- score trend -->
+    <div class="bg-white rounded-lg shadow p-4 lg:col-span-2">
+      <h3 class="font-semibold mb-2">Quality Trend</h3>
+      <div class="h-64"><canvas x-ref="trendChart"></canvas></div>
+    </div>
+    <!-- coverage trend -->
+    <div class="bg-white rounded-lg shadow p-4">
+      <h3 class="font-semibold mb-2">Coverage Trend</h3>
+      <div class="h-64"><canvas x-ref="coverageChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- runs table -->
+  <div class="bg-white rounded-lg shadow">
+    <div class="px-5 py-3 border-b font-semibold flex justify-between items-center">
+      <span>Run History</span>
+      <button @click="loadProject(selectedProject?.id)" class="text-xs text-slate-500 hover:text-slate-900">Refresh</button>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-100 text-xs uppercase text-slate-500">
+          <tr>
+            <th class="text-left px-4 py-2">Started</th>
+            <th class="text-left px-4 py-2">Status</th>
+            <th class="text-left px-4 py-2">Mode</th>
+            <th class="text-right px-4 py-2">Score</th>
+            <th class="text-right px-4 py-2">Findings</th>
+            <th class="text-right px-4 py-2">Critical</th>
+            <th class="text-right px-4 py-2">At-Risk</th>
+            <th class="text-right px-4 py-2">Test%</th>
+            <th class="text-right px-4 py-2">Duration</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="r in runs" :key="r.id">
+            <tr class="border-t hover:bg-slate-50 cursor-pointer" @click="(r.status==='success' || r.status==='failed') && openRun(r.id)">
+              <td class="px-4 py-2" x-text="fmtDate(r.started_at)"></td>
+              <td class="px-4 py-2">
+                <span class="px-2 py-0.5 rounded text-xs"
+                      :class="{
+                         'bg-emerald-100 text-emerald-700': r.status==='success',
+                         'bg-amber-100 text-amber-700': r.status==='running',
+                         'bg-red-100 text-red-700': r.status==='failed'}"
+                      x-text="r.status"></span>
+                <div x-show="r.status==='failed' && r.error_message"
+                     class="text-xs text-red-600 mt-1 max-w-xs truncate"
+                     :title="r.error_message"
+                     x-text="r.error_message"></div>
+              </td>
+              <td class="px-4 py-2 text-xs" x-text="r.render_mode || '—'"></td>
+              <td class="px-4 py-2 text-right font-semibold" :class="scoreColor(r.score_mean)"
+                  x-text="r.score_mean!=null ? Math.round(r.score_mean) : '—'"></td>
+              <td class="px-4 py-2 text-right" x-text="r.findings_total ?? '—'"></td>
+              <td class="px-4 py-2 text-right text-red-600" x-text="r.findings_critical ?? '—'"></td>
+              <td class="px-4 py-2 text-right" x-text="r.models_at_risk ?? '—'"></td>
+              <td class="px-4 py-2 text-right" x-text="r.coverage_test!=null ? (r.coverage_test*100).toFixed(0)+'%' : '—'"></td>
+              <td class="px-4 py-2 text-right text-xs text-slate-500" x-text="r.duration_ms ? (r.duration_ms/1000).toFixed(1)+'s' : '—'"></td>
+              <td class="px-4 py-2 text-right">
+                <span x-show="r.status==='success'" class="text-emerald-600 text-xs">View →</span>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="runs.length===0"><td colspan="10" class="text-center py-6 text-slate-400">No runs yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== RUN DETAIL ===================== -->
+<section x-show="view==='run' && selectedRun" x-cloak>
+  <button @click="view='project'; loadProject(selectedProject?.id)" class="text-sm text-slate-600 hover:text-slate-900 mb-3">← Back to project</button>
+
+  <!-- failure banner -->
+  <div x-show="selectedRun?.status === 'failed'"
+       class="mb-5 bg-red-50 border border-red-300 rounded-lg p-4 flex gap-3 items-start">
+    <span class="text-red-500 text-xl leading-none">✕</span>
+    <div>
+      <div class="font-semibold text-red-700">Scan failed</div>
+      <div class="text-sm text-red-600 mt-1" x-text="selectedRun?.error_message || 'No error details available. Check the console log for more information.'"></div>
+      <a :href="`/api/projects/${selectedProject?.id}/runs/${selectedRun?.id}/artifact/console.txt`"
+         class="inline-block mt-2 text-xs text-red-700 underline">View console log →</a>
+    </div>
+  </div>
+
+  <div class="flex items-start justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold">Run <span x-text="selectedRun?.id" class="font-mono text-slate-500 text-base"></span></h1>
+      <div class="text-sm text-slate-500" x-text="fmtDate(selectedRun?.started_at) + ' • ' + (selectedRun?.render_mode || 'unknown')"></div>
+    </div>
+    <div class="flex gap-2 text-sm">
+      <a :href="`/api/projects/${selectedProject?.id}/runs/${selectedRun?.id}/artifact/findings.json`"
+         class="bg-slate-200 px-3 py-1 rounded hover:bg-slate-300">findings.json</a>
+      <a :href="`/api/projects/${selectedProject?.id}/runs/${selectedRun?.id}/artifact/coverage.json`"
+         class="bg-slate-200 px-3 py-1 rounded hover:bg-slate-300">coverage.json</a>
+      <a :href="`/api/projects/${selectedProject?.id}/runs/${selectedRun?.id}/artifact/findings.sarif`"
+         class="bg-slate-200 px-3 py-1 rounded hover:bg-slate-300">findings.sarif</a>
+      <a :href="`/api/projects/${selectedProject?.id}/runs/${selectedRun?.id}/artifact/console.txt`"
+         class="bg-slate-200 px-3 py-1 rounded hover:bg-slate-300">console</a>
+    </div>
+  </div>
+
+  <!-- summary cards -->
+  <div class="grid md:grid-cols-4 gap-4 mb-6">
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="text-xs text-slate-500">Mean Score</div>
+      <div class="text-3xl font-bold" :class="scoreColor(selectedRun?.score_mean)" x-text="Math.round(selectedRun?.score_mean ?? 0)"></div>
+      <div class="text-xs text-slate-500" x-text="'median ' + (Math.round(selectedRun?.score_median ?? 0))"></div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="text-xs text-slate-500">Findings</div>
+      <div class="text-3xl font-bold" x-text="selectedRun?.findings_total ?? 0"></div>
+      <div class="text-xs text-red-500" x-text="(selectedRun?.findings_critical ?? 0) + ' critical'"></div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="text-xs text-slate-500">Models</div>
+      <div class="text-3xl font-bold" x-text="selectedRun?.models_total ?? 0"></div>
+      <div class="text-xs text-amber-600" x-text="(selectedRun?.models_at_risk ?? 0) + ' at-risk (<70)'"></div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4">
+      <div class="text-xs text-slate-500">Parse Failed</div>
+      <div class="text-3xl font-bold" x-text="selectedRun?.parse_failed ?? 0"></div>
+      <div class="text-xs text-slate-500" x-text="selectedRun?.duration_ms ? 'in ' + (selectedRun.duration_ms/1000).toFixed(1) + 's' : ''"></div>
+    </div>
+  </div>
+
+  <!-- coverage dimensions -->
+  <div class="bg-white rounded-lg shadow p-4 mb-6">
+    <h3 class="font-semibold mb-3">Coverage Dimensions</h3>
+    <div class="grid md:grid-cols-3 gap-4">
+      <template x-for="dim in coverageDims" :key="dim.dimension">
+        <div class="border rounded p-3 th-tip dim-card-tip" :data-tip="meta.dimensions[dim.dimension]?.desc || ''">
+          <div class="flex justify-between items-start">
+            <span class="text-sm font-medium" x-text="meta.dimensions[dim.dimension]?.name || dim.dimension"></span>
+            <div class="flex items-center gap-1 shrink-0 ml-1">
+              <span class="text-sm font-bold" x-text="(dim.ratio*100).toFixed(1)+'%'"></span>
+              <span class="text-slate-300 text-xs leading-none" title="">ℹ</span>
+            </div>
+          </div>
+          <div class="mt-1 h-2 bg-slate-200 rounded">
+            <div class="h-2 rounded" :class="ratioColor(dim.ratio)" :style="`width:${dim.ratio*100}%`"></div>
+          </div>
+          <div class="text-xs text-slate-500 mt-1" x-text="`${dim.covered} / ${dim.total}`"></div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- per-model coverage -->
+  <div class="bg-white rounded-lg shadow mb-6">
+    <div class="px-5 py-3 border-b font-semibold flex justify-between items-center flex-wrap gap-2">
+      <span>Per-Model Coverage (<span x-text="perModelFiltered.length"></span> / <span x-text="perModelRows.length"></span>)</span>
+      <div class="flex gap-2 text-sm items-center">
+        <input type="text" x-model="perModelSearch" placeholder="Filter by name…"
+               class="border rounded px-2 py-1 text-sm w-48" />
+        <select x-model="perModelDimFilter" class="border rounded px-2 py-1 text-sm">
+          <option value="">All models</option>
+          <template x-for="d in perModelDimensions" :key="d">
+            <option :value="d" x-text="'Missing ' + (meta.dimensions[d]?.name || d)"></option>
+          </template>
+        </select>
+        <select x-model="perModelSortBy" class="border rounded px-2 py-1 text-sm">
+          <option value="score">Sort: Score ↑</option>
+          <option value="-score">Sort: Score ↓</option>
+          <option value="name">Sort: Name</option>
+          <option value="findings">Sort: Findings ↓</option>
+        </select>
+      </div>
+    </div>
+    <div class="overflow-x-auto max-h-[600px]">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-100 text-xs uppercase text-slate-500 sticky top-0">
+          <tr>
+            <th class="text-left px-3 py-2 th-tip" :data-tip="meta.column_tooltips?.model || 'Model name and file path'">Model</th>
+            <th class="text-right px-3 py-2 th-tip" :data-tip="meta.column_tooltips?.score || 'Quality score 0-100'">Score</th>
+            <th class="text-right px-3 py-2 th-tip" :data-tip="meta.column_tooltips?.findings || 'Rule violations'">Findings</th>
+            <template x-for="d in perModelDimensions" :key="d">
+              <th class="text-center px-3 py-2 th-tip" :data-tip="meta.dimensions[d]?.desc || ''"
+                  x-text="meta.dimensions[d]?.name || d"></th>
+            </template>
+            <th class="text-right px-3 py-2 th-tip" :data-tip="meta.column_tooltips?.tests || 'Data tests declared'">Tests</th>
+            <th class="text-right px-3 py-2 th-tip" :data-tip="meta.column_tooltips?.unit || 'Unit tests (dbt 1.8+)'">Unit</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="m in perModelFiltered.slice(0, perModelLimit)" :key="m.node_id">
+            <tr class="border-t hover:bg-slate-50 cursor-pointer" @click="selectModel(m)">
+              <td class="px-3 py-1.5">
+                <div class="font-mono text-xs font-medium text-slate-800" x-text="m.name"></div>
+                <div class="text-xs text-slate-400 truncate max-w-md" :title="m.file_path" x-text="m.file_path"></div>
+              </td>
+              <td class="px-3 py-1.5 text-right font-bold text-base"
+                  :class="scoreColor(m.score)" x-text="m.score ?? '—'"></td>
+              <td class="px-3 py-1.5 text-right">
+                <span x-show="m.finding_count > 0" class="inline-flex items-center gap-1">
+                  <span x-show="(m.tier1_rules||[]).length > 0" class="px-1.5 py-0.5 rounded text-xs bg-red-100 text-red-700 font-medium" x-text="(m.tier1_rules||[]).length + ' T1'"></span>
+                  <span x-show="(m.tier2_rules||[]).length > 0" class="px-1.5 py-0.5 rounded text-xs bg-amber-100 text-amber-700 font-medium" x-text="(m.tier2_rules||[]).length + ' T2'"></span>
+                </span>
+                <span x-show="m.finding_count === 0" class="text-slate-300 text-xs">—</span>
+              </td>
+              <template x-for="d in perModelDimensions" :key="d">
+                <td class="px-3 py-1.5 text-center" :title="dimCellTitle(m, d)">
+                  <span x-html="dimCell(m, d)"></span>
+                </td>
+              </template>
+              <td class="px-3 py-1.5 text-right text-xs" x-text="m.data_test_count"></td>
+              <td class="px-3 py-1.5 text-right text-xs" x-text="m.unit_test_count"></td>
+            </tr>
+          </template>
+          <tr x-show="perModelFiltered.length > perModelLimit">
+            <td :colspan="5 + perModelDimensions.length" class="text-center py-3">
+              <button @click="perModelLimit += 100" class="text-xs text-emerald-600 hover:underline">
+                Show 100 more (<span x-text="perModelFiltered.length - perModelLimit"></span> hidden)
+              </button>
+            </td>
+          </tr>
+          <tr x-show="perModelFiltered.length === 0">
+            <td :colspan="5 + perModelDimensions.length" class="text-center py-6 text-slate-400">No models match filter</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- findings table -->
+  <div class="bg-white rounded-lg shadow">
+    <div class="px-5 py-3 border-b font-semibold flex justify-between items-center">
+      <span>Findings (<span x-text="findingsTotal"></span>)</span>
+      <div class="flex gap-2 text-sm">
+        <select x-model="findingFilter.rule_id" @change="loadFindings()" class="border rounded px-2 py-1">
+          <option value="">All rules</option>
+          <template x-for="rid in findingRuleIds" :key="rid">
+            <option :value="rid" x-text="rid + ' — ' + (meta.rules[rid]?.name || '')"></option>
+          </template>
+        </select>
+        <select x-model="findingFilter.severity" @change="loadFindings()" class="border rounded px-2 py-1">
+          <option value="">All severities</option>
+          <option>BLOCKER</option><option>CRITICAL</option><option>MAJOR</option><option>MINOR</option><option>INFO</option>
+        </select>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-100 text-xs uppercase text-slate-500">
+          <tr>
+            <th class="text-left px-4 py-2">Sev</th>
+            <th class="text-left px-4 py-2">Rule</th>
+            <th class="text-left px-4 py-2">Message</th>
+            <th class="text-left px-4 py-2">Location</th>
+            <th class="text-right px-4 py-2">Conf</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="(f, i) in findings" :key="i">
+            <tr class="border-t hover:bg-slate-50">
+              <td class="px-4 py-2"><span class="px-2 py-0.5 rounded text-xs font-medium" :class="sevColor(f.severity)" x-text="f.severity"></span></td>
+              <td class="px-4 py-2 font-mono text-xs" :title="meta.rules[f.rule_id]?.desc || ''" x-text="f.rule_id"></td>
+              <td class="px-4 py-2" x-text="f.message"></td>
+              <td class="px-4 py-2 text-xs text-slate-500" x-text="(f.file_path||'') + ':' + (f.line||'')"></td>
+              <td class="px-4 py-2 text-right text-xs" x-text="(f.confidence ?? 0).toFixed(2)"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== MODEL DETAIL SLIDE-OVER ===================== -->
+<div x-show="modelPanelOpen" x-cloak
+     class="fixed inset-0 z-40 flex justify-end"
+     @keydown.escape.window="modelPanelOpen=false">
+  <!-- backdrop -->
+  <div class="absolute inset-0 bg-black/30" @click="modelPanelOpen=false"></div>
+  <!-- panel -->
+  <div class="relative bg-white w-full max-w-2xl h-full overflow-y-auto shadow-2xl flex flex-col"
+       @click.stop>
+    <!-- header -->
+    <div class="sticky top-0 bg-white border-b px-6 py-4 flex items-start justify-between gap-4 z-10">
+      <div class="min-w-0">
+        <div class="font-bold text-lg font-mono truncate" x-text="selectedModel?.name"></div>
+        <div class="text-xs text-slate-500 break-all mt-0.5" x-text="selectedModel?.file_path"></div>
+        <div class="flex gap-2 mt-2 flex-wrap">
+          <span x-show="selectedModel?.parse_success === false" class="px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-700">Parse failed</span>
+          <span x-show="selectedModel?.render_uncertain" class="px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700">Uncertain render</span>
+          <span x-show="selectedModel?.parse_success && !selectedModel?.render_uncertain" class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">Parse OK</span>
+        </div>
+      </div>
+      <button @click="modelPanelOpen=false" class="text-slate-400 hover:text-slate-800 text-2xl leading-none flex-shrink-0">✕</button>
+    </div>
+
+    <div class="p-6 space-y-6">
+      <!-- score card -->
+      <div class="bg-slate-50 rounded-xl p-5">
+        <div class="flex items-center gap-4 mb-4">
+          <div class="text-5xl font-black" :class="scoreColor(selectedModel?.score)" x-text="selectedModel?.score ?? '—'"></div>
+          <div>
+            <div class="text-sm font-semibold text-slate-700">Quality Score</div>
+            <div class="text-xs text-slate-500">100 = perfect · &lt;70 = at-risk</div>
+          </div>
+        </div>
+        <!-- score breakdown -->
+        <div x-show="selectedModel?.score_breakdown && Object.keys(selectedModel.score_breakdown).length > 0">
+          <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Score Breakdown</div>
+          <div class="space-y-1">
+            <template x-for="[reason, pts] in Object.entries(selectedModel?.score_breakdown || {})" :key="reason">
+              <div x-show="pts > 0" class="flex items-center gap-2">
+                <div class="flex-1 text-xs text-slate-600" x-text="scoreBreakdownLabel(reason)"></div>
+                <div class="text-xs font-mono font-semibold text-red-600" x-text="'-' + pts"></div>
+                <div class="w-24 h-1.5 bg-slate-200 rounded overflow-hidden">
+                  <div class="h-full bg-red-400 rounded" :style="'width:' + Math.min(100, pts * 2) + '%'"></div>
+                </div>
+              </div>
+            </template>
+            <div class="flex items-center gap-2 pt-1 border-t mt-1">
+              <div class="flex-1 text-xs font-semibold text-slate-700">Final score</div>
+              <div class="text-xs font-mono font-bold" :class="scoreColor(selectedModel?.score)" x-text="selectedModel?.score ?? 0"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- coverage dimensions -->
+      <div>
+        <div class="text-sm font-semibold text-slate-700 mb-3">Coverage</div>
+        <div class="space-y-2">
+          <template x-for="d in perModelDimensions" :key="d">
+            <div x-show="selectedModel?.dims?.[d]" class="flex items-center gap-3">
+              <div class="w-40 text-xs text-slate-600 truncate th-tip dim-card-tip" :data-tip="meta.dimensions[d]?.desc || ''" x-text="meta.dimensions[d]?.name || d"></div>
+              <div class="flex-1">
+                <template x-if="selectedModel?.dims?.[d]?.[1] === 1">
+                  <span x-html="dimCell(selectedModel, d)"></span>
+                </template>
+                <template x-if="selectedModel?.dims?.[d]?.[1] > 1">
+                  <div class="flex items-center gap-2">
+                    <div class="flex-1 h-2 bg-slate-200 rounded overflow-hidden">
+                      <div class="h-full rounded" :class="ratioColor((selectedModel.dims[d][0])/(selectedModel.dims[d][1]))" :style="'width:' + ((selectedModel.dims[d][0])/(selectedModel.dims[d][1])*100) + '%'"></div>
+                    </div>
+                    <span class="text-xs font-mono w-10 text-right" x-text="((selectedModel.dims[d][0]/selectedModel.dims[d][1])*100).toFixed(0)+'%'"></span>
+                    <span class="text-xs text-slate-400" x-text="selectedModel.dims[d][0]+'/'+selectedModel.dims[d][1]"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- test & doc stats -->
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-white border rounded-lg p-3">
+          <div class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wide">Test Stats</div>
+          <div class="space-y-1 text-sm">
+            <div class="flex justify-between"><span class="text-slate-600">Data tests</span><span class="font-semibold" x-text="selectedModel?.data_test_count ?? 0"></span></div>
+            <div class="flex justify-between"><span class="text-slate-600">Unit tests</span><span class="font-semibold" x-text="selectedModel?.unit_test_count ?? 0"></span></div>
+            <div class="flex justify-between">
+              <span class="text-slate-600">Not executed</span>
+              <span class="font-semibold" :class="(selectedModel?.tests_not_run_count||0) > 0 ? 'text-amber-600' : ''" x-text="selectedModel?.tests_not_run_count ?? 0"></span>
+            </div>
+            <div class="flex justify-between"><span class="text-slate-600">Waivers</span><span class="font-semibold" x-text="selectedModel?.waived_count ?? 0"></span></div>
+            <div class="flex justify-between"><span class="text-slate-600">Skipped checks</span><span class="font-semibold" x-text="selectedModel?.skip_count ?? 0"></span></div>
+          </div>
+        </div>
+        <div class="bg-white border rounded-lg p-3">
+          <div class="text-xs text-slate-500 mb-2 font-semibold uppercase tracking-wide">Doc Coverage</div>
+          <div class="text-3xl font-black mb-1" :class="(selectedModel?.doc_ratio||0) >= 0.8 ? 'text-emerald-600' : (selectedModel?.doc_ratio||0) >= 0.5 ? 'text-amber-600' : 'text-red-600'" x-text="((selectedModel?.doc_ratio||0)*100).toFixed(0)+'%'"></div>
+          <div class="h-2 bg-slate-200 rounded overflow-hidden">
+            <div class="h-full rounded" :class="ratioColor(selectedModel?.doc_ratio||0)" :style="'width:'+(selectedModel?.doc_ratio||0)*100+'%'"></div>
+          </div>
+          <div class="text-xs text-slate-500 mt-1">columns documented</div>
+        </div>
+      </div>
+
+      <!-- rule violations -->
+      <div x-show="(selectedModel?.tier1_rules||[]).length > 0 || (selectedModel?.tier2_rules||[]).length > 0">
+        <div class="text-sm font-semibold text-slate-700 mb-2">Rule Violations</div>
+        <div class="flex flex-wrap gap-2">
+          <template x-for="r in (selectedModel?.tier1_rules||[])" :key="r">
+            <span class="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-mono font-semibold"
+                  :title="(meta.rules[r]?.name || '') + ' — ' + (meta.rules[r]?.desc || '')" x-text="r"></span>
+          </template>
+          <template x-for="r in (selectedModel?.tier2_rules||[])" :key="r">
+            <span class="px-2 py-1 rounded bg-amber-100 text-amber-700 text-xs font-mono"
+                  :title="(meta.rules[r]?.name || '') + ' — ' + (meta.rules[r]?.desc || '')" x-text="r"></span>
+          </template>
+        </div>
+      </div>
+
+      <!-- findings for this model -->
+      <div x-show="modelFindings.length > 0">
+        <div class="text-sm font-semibold text-slate-700 mb-2">Findings (<span x-text="modelFindings.length"></span>)</div>
+        <div class="space-y-2">
+          <template x-for="(f, i) in modelFindings" :key="i">
+            <div class="border rounded-lg p-3 bg-white">
+              <div class="flex items-start gap-2">
+                <span class="px-2 py-0.5 rounded text-xs font-medium flex-shrink-0" :class="sevColor(f.severity)" x-text="f.severity"></span>
+                <span class="font-mono text-xs font-bold flex-shrink-0" :title="(meta.rules[f.rule_id]?.desc||'')" x-text="f.rule_id"></span>
+                <span class="text-xs text-slate-600 flex-1" x-text="meta.rules[f.rule_id]?.name || ''"></span>
+                <span class="text-xs text-slate-400" x-text="(f.confidence||0).toFixed(2)"></span>
+              </div>
+              <div class="text-xs text-slate-700 mt-1.5 ml-1" x-text="f.message"></div>
+              <div class="text-xs text-slate-400 mt-1 ml-1" x-text="(f.file_path||'') + (f.line ? ':'+f.line : '')"></div>
+              <div x-show="f.fix_hint" class="text-xs text-emerald-700 mt-1 ml-1 italic" x-text="'💡 ' + f.fix_hint"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+      <div x-show="modelFindings.length === 0" class="text-sm text-slate-400">No findings for this model.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== REGISTER PROJECT MODAL ===================== -->
+<div x-show="modal==='register'" x-cloak class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+    <h3 class="text-lg font-bold mb-4">Register a dbt project</h3>
+    <label class="block mb-3">
+      <span class="text-sm text-slate-600">Project name</span>
+      <input x-model="newProject.name" class="mt-1 w-full border rounded px-3 py-2" placeholder="my-warehouse" />
+    </label>
+    <label class="block mb-3">
+      <span class="text-sm text-slate-600">Absolute path to dbt project</span>
+      <input x-model="newProject.path" class="mt-1 w-full border rounded px-3 py-2" placeholder="/path/to/dbt-project" />
+      <span class="text-xs text-slate-500">Folder must contain <code>dbt_project.yml</code>.</span>
+    </label>
+    <div class="text-red-600 text-sm" x-show="modalError" x-text="modalError"></div>
+    <div class="flex justify-end gap-2 mt-4">
+      <button @click="modal=null" class="px-4 py-2 text-sm rounded hover:bg-slate-100">Cancel</button>
+      <button @click="createProject()" class="bg-emerald-600 text-white px-4 py-2 text-sm rounded hover:bg-emerald-500">Register</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== CONFIG MODAL ===================== -->
+<div x-show="modal==='config'" x-cloak class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl w-full max-w-7xl h-[90vh] flex flex-col">
+    <div class="p-4 border-b flex justify-between items-center flex-wrap gap-2">
+      <div>
+        <h3 class="font-bold">Configuration — <span x-text="selectedProject?.name"></span></h3>
+        <div class="text-xs text-slate-500" x-text="configPath"></div>
+      </div>
+      <div class="flex gap-2 items-center">
+        <div class="bg-slate-100 rounded p-0.5 text-xs flex">
+          <button @click="syncFormFromYaml(); configTab='form'"
+                  :class="configTab==='form' ? 'bg-white shadow font-semibold' : ''"
+                  class="px-3 py-1 rounded">Form</button>
+          <button @click="syncYamlFromForm(); configTab='yaml'"
+                  :class="configTab==='yaml' ? 'bg-white shadow font-semibold' : ''"
+                  class="px-3 py-1 rounded">YAML</button>
+        </div>
+        <button @click="loadTemplate()" class="text-sm px-3 py-1 rounded bg-slate-200 hover:bg-slate-300" title="Reset to default template">Reset to Defaults</button>
+        <button @click="saveConfig()" class="text-sm px-3 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-500">Save</button>
+        <button @click="modal=null" class="text-sm px-3 py-1 rounded hover:bg-slate-100">Close</button>
+      </div>
+    </div>
+    <div class="text-red-600 text-sm px-4 py-2 bg-red-50 border-b" x-show="configError" x-text="configError"></div>
+
+    <!-- ===== FORM VIEW ===== -->
+    <div x-show="configTab==='form'" class="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50">
+      <!-- General -->
+      <div class="bg-white rounded shadow-sm p-4">
+        <h4 class="font-semibold text-base mb-3 border-b pb-2">General</h4>
+        <div class="grid md:grid-cols-2 gap-4">
+          <label class="block">
+            <span class="text-sm font-medium">Render mode</span>
+            <select x-model="form.render.mode" class="mt-1 w-full border rounded px-2 py-1.5">
+              <option>AUTO</option><option>COMPILED</option><option>MOCK</option><option>PARTIAL</option>
+            </select>
+            <span class="text-xs text-slate-500" x-text="meta.config_fields['render.mode']?.desc"></span>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Render fallback</span>
+            <select x-model="form.render.fallback" class="mt-1 w-full border rounded px-2 py-1.5">
+              <option>PARTIAL</option><option>MOCK</option>
+            </select>
+            <span class="text-xs text-slate-500">When AUTO can't pick COMPILED, fall back to this mode.</span>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">SQL dialect</span>
+            <select x-model="form.dialect" class="mt-1 w-full border rounded px-2 py-1.5">
+              <option>snowflake</option><option>bigquery</option><option>postgres</option>
+              <option>redshift</option><option>databricks</option><option>spark</option>
+              <option>duckdb</option><option>trino</option><option>mysql</option>
+            </select>
+            <span class="text-xs text-slate-500" x-text="meta.config_fields['dialect']?.desc"></span>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Confidence threshold</span>
+            <input type="number" min="0" max="1" step="0.05" x-model.number="form.confidence_threshold"
+                   class="mt-1 w-full border rounded px-2 py-1.5" />
+            <span class="text-xs text-slate-500" x-text="meta.config_fields['confidence_threshold']?.desc"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Complexity -->
+      <div class="bg-white rounded shadow-sm p-4">
+        <h4 class="font-semibold text-base mb-3 border-b pb-2">Complexity Thresholds</h4>
+        <div class="grid md:grid-cols-3 gap-4">
+          <label class="block">
+            <span class="text-sm font-medium">Warn threshold</span>
+            <input type="number" min="1" x-model.number="form.complexity.threshold_warn"
+                   class="mt-1 w-full border rounded px-2 py-1.5" />
+            <span class="text-xs text-slate-500" x-text="meta.config_fields['complexity.threshold_warn']?.desc"></span>
+          </label>
+          <label class="block">
+            <span class="text-sm font-medium">Block threshold</span>
+            <input type="number" min="1" x-model.number="form.complexity.threshold_block"
+                   class="mt-1 w-full border rounded px-2 py-1.5" />
+            <span class="text-xs text-slate-500" x-text="meta.config_fields['complexity.threshold_block']?.desc"></span>
+          </label>
+          <label class="flex items-center gap-2 mt-6">
+            <input type="checkbox" x-model="form.complexity.include_jinja" class="rounded" />
+            <span class="text-sm">Include Jinja control flow in complexity</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Coverage minimums -->
+      <div class="bg-white rounded shadow-sm p-4">
+        <h4 class="font-semibold text-base mb-3 border-b pb-2">Coverage Minimums</h4>
+        <p class="text-xs text-slate-500 mb-3">Minimum required ratio (0.0–1.0) per dimension. The gate fails when actual &lt; min.</p>
+        <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <template x-for="(dim, key) in meta.dimensions" :key="key">
+            <label class="block">
+              <span class="text-sm font-medium" x-text="dim.name"></span>
+              <span class="text-xs text-slate-500 block mb-1" x-text="dim.desc"></span>
+              <input type="number" min="0" max="1" step="0.05"
+                     :value="form.coverage[key]?.min ?? 0"
+                     @input="form.coverage[key] = form.coverage[key] || {}; form.coverage[key].min = parseFloat($event.target.value)"
+                     class="mt-1 w-full border rounded px-2 py-1.5" />
+            </label>
+          </template>
+        </div>
+      </div>
+
+      <!-- Score Weights -->
+      <div class="bg-white rounded shadow-sm p-4">
+        <h4 class="font-semibold text-base mb-3 border-b pb-2">Score Weights</h4>
+        <p class="text-xs text-slate-500 mb-3">Control how each dimension contributes to the per-model 0–100 quality score. Changes take effect on the next scan.</p>
+        <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <template x-for="key in ['no_test_penalty','doc_penalty_max','tier1_per_finding','tier1_cap','tier2_per_finding','tier2_cap','unexec_per_test','unexec_cap','parse_fail_penalty','parse_uncertain_penalty','skip_cap']" :key="key">
+            <label class="block">
+              <span class="text-sm font-medium" x-text="meta.config_fields['scoring.'+key]?.name || key"></span>
+              <span class="text-xs text-slate-500 block mb-1" x-text="meta.config_fields['scoring.'+key]?.desc || ''"></span>
+              <input type="number" min="0" max="100" step="1"
+                     :value="form.scoring[key] ?? scoringDefaults[key]"
+                     @input="form.scoring[key] = parseInt($event.target.value)"
+                     class="mt-1 w-full border rounded px-2 py-1.5 text-sm" />
+            </label>
+          </template>
+        </div>
+      </div>
+
+      <!-- Gate -->
+      <div class="bg-white rounded shadow-sm p-4">
+        <h4 class="font-semibold text-base mb-3 border-b pb-2">Quality Gate</h4>
+        <div class="grid md:grid-cols-2 gap-4">
+          <label class="block">
+            <span class="text-sm font-medium">Fail on tier</span>
+            <select x-model="form.gate.fail_on_tier" class="mt-1 w-full border rounded px-2 py-1.5">
+              <option value="TIER_1_ENFORCED">TIER_1_ENFORCED — only critical findings fail</option>
+              <option value="TIER_2_WARN">TIER_2_WARN — any tier-2 finding fails</option>
+              <option value="">(disabled)</option>
+            </select>
+          </label>
+          <label class="flex items-center gap-2 mt-6">
+            <input type="checkbox" x-model="form.gate.fail_on_coverage_regression" class="rounded" />
+            <span class="text-sm">Fail when coverage regresses vs baseline</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Rules -->
+      <div class="bg-white rounded shadow-sm p-4">
+        <h4 class="font-semibold text-base mb-3 border-b pb-2 flex justify-between items-center">
+          <span>Rules</span>
+          <input type="text" x-model="ruleSearch" placeholder="Filter rules…"
+                 class="border rounded px-2 py-1 text-xs font-normal w-48" />
+        </h4>
+        <div class="space-y-1 max-h-96 overflow-y-auto pr-2">
+          <template x-for="ruleId in filteredRuleIds" :key="ruleId">
+            <div class="flex items-center gap-3 p-2 rounded hover:bg-slate-50 border-l-2"
+                 :class="catColor(meta.rules[ruleId]?.category)">
+              <input type="checkbox"
+                     :checked="form.rules[ruleId]?.enabled !== false"
+                     @change="form.rules[ruleId] = form.rules[ruleId] || {}; form.rules[ruleId].enabled = $event.target.checked"
+                     class="rounded" />
+              <div class="flex-1 min-w-0">
+                <div class="flex items-baseline gap-2">
+                  <span class="font-mono text-xs font-bold" x-text="ruleId"></span>
+                  <span class="text-sm font-medium" x-text="meta.rules[ruleId]?.name"></span>
+                  <span class="text-xs text-slate-400" x-text="meta.rules[ruleId]?.category"></span>
+                </div>
+                <div class="text-xs text-slate-600" x-text="meta.rules[ruleId]?.desc"></div>
+              </div>
+              <select :value="form.rules[ruleId]?.severity || 'MAJOR'"
+                      @change="form.rules[ruleId] = form.rules[ruleId] || {}; form.rules[ruleId].severity = $event.target.value"
+                      class="border rounded px-2 py-1 text-xs">
+                <option>BLOCKER</option><option>CRITICAL</option><option>MAJOR</option><option>MINOR</option><option>INFO</option>
+              </select>
+              <select :value="form.rules[ruleId]?.tier || 'TIER_2_WARN'"
+                      @change="form.rules[ruleId] = form.rules[ruleId] || {}; form.rules[ruleId].tier = $event.target.value"
+                      class="border rounded px-2 py-1 text-xs">
+                <option>TIER_1_ENFORCED</option><option>TIER_2_WARN</option>
+              </select>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== YAML VIEW ===== -->
+    <div x-show="configTab==='yaml'" class="flex-1 grid grid-cols-2 gap-0 overflow-hidden">
+      <div class="border-r overflow-hidden flex flex-col">
+        <div class="px-4 py-2 bg-slate-100 text-xs uppercase text-slate-600">dbtcov.yml</div>
+        <textarea x-model="configYaml" spellcheck="false"
+                  class="flex-1 font-mono text-xs p-3 outline-none resize-none"></textarea>
+      </div>
+      <div class="overflow-y-auto p-4 bg-slate-50">
+        <div class="mb-4">
+          <h4 class="font-semibold text-sm mb-2">Top-level options</h4>
+          <template x-for="(f, key) in meta.config_fields" :key="key">
+            <div class="mb-3 border-l-2 border-slate-300 pl-3">
+              <div class="font-mono text-xs text-slate-500" x-text="key"></div>
+              <div class="font-medium text-sm" x-text="f.name"></div>
+              <div class="text-xs text-slate-600" x-text="f.desc"></div>
+              <div class="text-xs text-slate-500 mt-0.5" x-show="f.options" x-text="'options: ' + (f.options||'')"></div>
+            </div>
+          </template>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm mb-2">Rules</h4>
+          <template x-for="(r, key) in meta.rules" :key="key">
+            <div class="mb-2 border-l-2 pl-3" :class="catColor(r.category)">
+              <div class="flex justify-between">
+                <span class="font-mono text-xs font-bold" x-text="key"></span>
+                <span class="text-xs text-slate-500" x-text="r.category"></span>
+              </div>
+              <div class="font-medium text-sm" x-text="r.name"></div>
+              <div class="text-xs text-slate-600" x-text="r.desc"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

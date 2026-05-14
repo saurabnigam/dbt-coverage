@@ -1,0 +1,159 @@
+# ── dbtcov CI/CD ──────────────────────────────────────────────────────────────
+#
+# Two jobs:
+#
+#   dbtcov-gate  (runs on every PR, on push to main)
+#     1. Full scan of the dbt project at DBT_PROJECT_PATH
+#     2. Gate: fails the build if new Tier-1 findings appear or coverage
+#              thresholds drop below the configured minimums
+#     3. Uploads SARIF to GitHub Advanced Security → inline PR annotations
+#     4. Uploads findings.json + coverage.json as build artefacts
+#
+#   dbtcov-baseline  (runs on push to main only, AFTER gate passes)
+#     Re-captures the baseline so the next PR only fails on genuinely new
+#     findings introduced by that PR, not pre-existing ones.
+#
+# Required repository secrets / vars
+#   DBT_PROJECT_PATH   – path inside the repo to the dbt project root
+#                        (default: ".")
+#   DBTCOV_BASELINE    – path to the baseline JSON file, relative to repo root
+#                        (default: ".dbtcov/baseline.json")
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: dbtcov
+
+on:
+  pull_request:
+    paths:
+      - "models/**"
+      - "tests/**"
+      - "macros/**"
+      - "dbt_project.yml"
+      - "dbtcov.yml"
+      - ".dbtcov/**"
+  push:
+    branches:
+      - main
+
+env:
+  DBT_PROJECT_PATH:  ${{ vars.DBT_PROJECT_PATH  || '.' }}
+  DBTCOV_BASELINE:   ${{ vars.DBTCOV_BASELINE   || '.dbtcov/baseline.json' }}
+  PYTHON_VERSION:    "3.11"
+
+permissions:
+  contents: write           # needed to commit baseline on main
+  security-events: write    # needed to upload SARIF
+  pull-requests: write      # needed for PR annotations
+
+jobs:
+
+  # ── Scan + Gate ─────────────────────────────────────────────────────────────
+  dbtcov-gate:
+    name: dbtcov scan & gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # Install dbt-coverage-lib.  Adjust the pip install line to point at your
+      # internal PyPI / JFrog Artifactory if you publish there.
+      - name: Install dbt-coverage-lib
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet dbt-coverage-lib
+
+      # ── Scan ──────────────────────────────────────────────────────────────
+      # --fail-on tier-1       block the build on any Tier-1 (enforced) finding
+      # --baseline             suppress findings already captured in the baseline,
+      #                        so PRs only fail on *new* problems
+      # --format sarif         GitHub Advanced Security annotation
+      # --format json          machine-readable findings + coverage artefact
+      # --out dbtcov-out       output directory
+      #
+      # Exit code 0 = gate passed, 1 = gate failed, 2 = fatal error
+      - name: Run dbtcov scan & gate
+        id: scan
+        run: |
+          dbtcov scan "${{ env.DBT_PROJECT_PATH }}" \
+            --fail-on tier-1 \
+            --baseline "${{ env.DBTCOV_BASELINE }}" \
+            --format sarif \
+            --format json \
+            --format console \
+            --out dbtcov-out
+        continue-on-error: true   # capture exit code; fail the job below after upload
+
+      # ── Upload SARIF (always, so annotations appear even on failure) ───────
+      - name: Upload SARIF to GitHub Advanced Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: dbtcov-out/findings.sarif
+          category: dbtcov
+
+      # ── Upload artefacts ───────────────────────────────────────────────────
+      - name: Upload dbtcov reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dbtcov-reports
+          path: dbtcov-out/
+          retention-days: 30
+
+      # ── Fail the job if the gate failed ───────────────────────────────────
+      - name: Check gate result
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "::error::dbtcov gate failed — see findings above or download the dbtcov-reports artefact."
+          exit 1
+
+  # ── Baseline capture (main branch only) ─────────────────────────────────────
+  dbtcov-baseline:
+    name: dbtcov capture baseline
+    runs-on: ubuntu-latest
+    needs: dbtcov-gate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need a token that can push to main (use a PAT or deploy key if
+          # branch protection is enabled; otherwise GITHUB_TOKEN suffices when
+          # "Allow GitHub Actions to create and approve pull requests" is on).
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dbt-coverage-lib
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet dbt-coverage-lib
+
+      - name: Capture baseline
+        run: |
+          dbtcov baseline capture \
+            --path "${{ env.DBT_PROJECT_PATH }}" \
+            --out  "${{ env.DBTCOV_BASELINE }}"
+
+      - name: Commit updated baseline
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ env.DBTCOV_BASELINE }}"
+          # Only commit if something changed
+          git diff --cached --quiet \
+            || git commit -m "chore(dbtcov): update baseline [skip ci]"
+          git push

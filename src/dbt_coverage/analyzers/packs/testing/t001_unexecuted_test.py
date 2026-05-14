@@ -37,9 +37,38 @@ class T001UnexecutedTestRule(BaseRule):
     requires_ast: ClassVar[bool] = False
 
     def check(self, ctx: RuleContext) -> Iterable[Finding]:
-        for tr in ctx.test_results:
-            if tr.executed:
-                continue
+        unexecuted = [tr for tr in ctx.test_results if not tr.executed]
+        if not unexecuted:
+            return
+
+        any_executed = any(tr.executed for tr in ctx.test_results)
+
+        # When NO tests executed at all, run_results.json is likely missing
+        # entirely.  Emit a single summary finding instead of N identical ones.
+        if not any_executed and len(unexecuted) > 1:
+            yield Finding(
+                rule_id=self.id,
+                severity=self.default_severity,
+                category=self.category,
+                type=self.finding_type,
+                tier=self.default_tier,
+                confidence=self.confidence_base,
+                message=(
+                    f"All {len(unexecuted)} tests are unexecuted — "
+                    "run_results.json appears to be missing. "
+                    "Run `dbt test` and re-scan with --dbt-artifacts."
+                ),
+                file_path=Path("manifest.json"),
+                line=1,
+                column=1,
+                node_id=None,
+                fingerprint=compute_fingerprint(
+                    self.id, "manifest.json", f"all_unexecuted:{len(unexecuted)}"
+                ),
+            )
+            return
+
+        for tr in unexecuted:
 
             fp = tr.file_path if tr.file_path is not None else Path("manifest.json")
             if fp.is_absolute():

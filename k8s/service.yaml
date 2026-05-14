@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dbt-coverage-ui
+  namespace: dbt-coverage
+  labels:
+    app: dbt-coverage-ui
+spec:
+  type: ClusterIP
+  selector:
+    app: dbt-coverage-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

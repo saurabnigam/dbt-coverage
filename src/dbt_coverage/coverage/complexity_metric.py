@@ -17,13 +17,28 @@ def compute_complexity_summary(
 ) -> CoverageMetric:
     threshold = cfg.complexity.threshold_warn
     model_ids = {nid for nid, n in parsed_nodes.items() if _is_model(n, nid)}
+
+    # Parse-failed models have no real AST — their CC defaults to 1 (below any
+    # threshold), giving a spurious ✓.  Exclude them from both numerator and
+    # denominator so the aggregate ratio is accurate and the UI shows "—".
+    # Uncertain-render models are included with their (approximate) CC because
+    # partial SQL analysis is still informative.
+    assessable = {nid for nid in model_ids if parsed_nodes[nid].parse_success}
+
     under: set[str] = set()
-    for m in model_ids:
+    for m in assessable:
         cc_val = complexity[m].cc if m in complexity else 1
         if cc_val <= threshold:
             under.add(m)
-    total = len(model_ids)
-    per_node = {m: (1 if m in under else 0, 1) for m in model_ids}
+
+    total = len(assessable)
+    per_node: dict[str, tuple[int, int]] = {}
+    for m in assessable:
+        per_node[m] = (1 if m in under else 0, 1)
+    # Parse-failed models get (0, 0) — the UI dimCell renders this as "—"
+    for nid in model_ids - assessable:
+        per_node[nid] = (0, 0)
+
     ratio = (len(under) / total) if total > 0 else 0.0
     return CoverageMetric(
         dimension="complexity",
@@ -35,7 +50,5 @@ def compute_complexity_summary(
 
 
 def _is_model(node: ParsedNode, node_id: str | None) -> bool:
-    if node_id and node_id.startswith("model."):
-        return True
-    nid = node.node_id or ""
-    return nid.startswith("model.") or True
+    nid = node_id or node.node_id or ""
+    return nid.startswith("model.")

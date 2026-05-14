@@ -1,0 +1,17 @@
+name: quality_score_scenarios
+version: "1.0.0"
+config-version: 2
+profile: quality_score_scenarios
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+require-dbt-version: ">=1.7.0"
+
+models:
+  quality_score_scenarios:
+    +materialized: view

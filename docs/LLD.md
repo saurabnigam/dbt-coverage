@@ -238,6 +238,26 @@ No re-scan performed.
 - `baseline capture`: run scan and write baseline entries.
 - `baseline diff`: run scan, load baseline, print added/removed fingerprint sets.
 
+### 6.4 ui
+
+Launches a FastAPI + Uvicorn server that hosts the `dbt_coverage_ui` dashboard.
+Options: `--host` (default `127.0.0.1`), `--port` (default `8000`).
+Data root: `~/.dbtcov-ui/` or `$DBTCOV_UI_HOME`.
+
+Key API surface:
+- `GET /projects` — list registered projects.
+- `POST /projects` — register a new project (`{name, path}`).
+- `DELETE /projects/{id}` — remove project and all run history.
+- `GET /projects/{id}/runs` — list run history rows.
+- `POST /projects/{id}/scan` — trigger a background scan (`{render_mode}`).
+- `GET /runs/{id}` — poll run status and summary.
+- `GET /projects/{id}/config` — read project `dbtcov.yml`.
+- `PUT /projects/{id}/config` — write project `dbtcov.yml`.
+- `GET /metadata/dimensions` — coverage dimension descriptions.
+- `GET /metadata/rules` — rule descriptions and severities.
+
+Stale-run recovery runs at startup: any `running` row whose `artifacts_dir/findings.json` exists is promoted to `success`; otherwise marked `failed`.
+
 ## 7. Reporting Pipeline
 
 `emit_reports` resolves reporter classes by format key:
@@ -254,7 +274,113 @@ Enforced by pydantic validators:
 - `Finding.end_line` cannot precede `line`.
 - strict enums and typed fields for skip reasons, tiers, categories, and test kinds.
 
-## 9. Canonical Usage Examples
+## 9. Rule Pack Registry
+
+All rules implement `RuleBase` and are loaded by the `RuleRegistry`. Packs are organized by domain under `analyzers/packs/`.
+
+| Rule ID | Pack | Name | Tier |
+|---|---|---|---|
+| Q001 | Quality | SELECT * | 1 |
+| Q002 | Quality | Missing primary key test | 1 |
+| Q003 | Quality | High cyclomatic complexity | 2 |
+| Q004 | Quality | Missing model description | 2 |
+| Q005 | Quality | Undocumented column | 2 |
+| Q006 | Quality | Naming convention violation | 2 |
+| Q007 | Quality | Inconsistent column casing | 2 |
+| P001 | Performance | Cross join | 1 |
+| P002 | Performance | Non-SARGable predicate | 2 |
+| P003 | Performance | Self-join with inequality | 2 |
+| P004 | Performance | Unbounded window function | 2 |
+| P005 | Performance | COUNT(DISTINCT) over window | 2 |
+| P006 | Performance | Fan-out join | 2 |
+| P007 | Performance | ORDER BY without LIMIT | 2 |
+| P008 | Performance | Deep CTE chain | 2 |
+| P009 | Performance | Over-referenced view | 2 |
+| P010 | Performance | Incremental model missing key | 1 |
+| A001 | Architecture | Layer violation | 1 |
+| A002 | Architecture | Excessive fan-in | 2 |
+| A003 | Architecture | Direct source reference | 2 |
+| A004 | Architecture | DAG cycle | 1 |
+| A005 | Architecture | Leaky abstraction | 2 |
+| R002 | Refactor | God model | 2 |
+| R003 | Refactor | Single-use CTE | 2 |
+| R004 | Refactor | Dead CTE | 2 |
+| R005 | Refactor | Duplicate expression | 2 |
+| R006 | Refactor | Duplicate CASE block | 2 |
+| S001 | Security | PII column unmasked | 1 |
+| S002 | Security | Hardcoded secret | 1 |
+| G001 | Governance | Missing owner tag | 2 |
+| T001 | Testing | Unexecuted test | 2 |
+| T002 | Testing | No unit tests | 2 |
+| T003 | Testing | Malformed unit test | 1 |
+
+## 10. Web UI — Implementation Details (`dbt_coverage_ui`)
+
+### 10.1 SQLite Schema
+
+```sql
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_run_id TEXT
+);
+
+CREATE TABLE runs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,              -- running | success | failed
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    render_mode TEXT,
+    score_mean REAL,
+    score_median REAL,
+    findings_total INTEGER,
+    findings_critical INTEGER,
+    findings_major INTEGER,
+    findings_minor INTEGER,
+    models_total INTEGER,
+    models_at_risk INTEGER,
+    parse_failed INTEGER,
+    coverage_test REAL,
+    coverage_doc REAL,
+    coverage_test_unit REAL,
+    coverage_test_meaningful REAL,
+    coverage_complexity REAL,
+    duration_ms INTEGER,
+    error_message TEXT,
+    artifacts_dir TEXT
+);
+CREATE INDEX idx_runs_project ON runs(project_id, started_at DESC);
+```
+
+### 10.2 Scanner Bridge
+
+`scanner.trigger_scan(project_path, render_mode, artifacts_dir)` wraps `orchestrator.scan` and writes `findings.json` + `coverage.json` to `artifacts_dir`. It returns a `_summarize(artifacts_dir)` dict that is persisted into the `runs` row via `store.finish_run`.
+
+### 10.3 Stale Run Recovery Sequence
+
+```mermaid
+sequenceDiagram
+    participant APP as FastAPI startup
+    participant STORE as SQLite Store
+    participant FS as Filesystem
+
+    APP->>STORE: SELECT runs WHERE status='running'
+    loop each stale row
+        STORE-->>APP: run_id, artifacts_dir
+        APP->>FS: exists(artifacts_dir/findings.json)?
+        alt findings.json exists
+            APP->>APP: _summarize(artifacts_dir)
+            APP->>STORE: finish_run(status=success)
+        else
+            APP->>STORE: finish_run(status=failed)
+        end
+    end
+```
+
+## 11. Canonical Usage Examples
 
 ```bash
 # full scan and artifacts
@@ -269,6 +395,13 @@ dbtcov gate --results dbtcov-out/findings.json --path .
 # baseline lifecycle
 dbtcov baseline capture --path .
 dbtcov baseline diff --path .
+
+# web dashboard
+dbtcov ui --host 0.0.0.0 --port 8000
+
+# containerised (K8s)
+# docker build -t dbt-coverage:1.0 .
+# kubectl apply -f k8s/
 ```
 
 This low-level design tracks current implementation behavior and the serialized contract emitted for downstream tooling.

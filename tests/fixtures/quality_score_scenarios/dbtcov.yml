@@ -1,0 +1,55 @@
+# dbtcov configuration for the quality_score_scenarios fixture project.
+# This project is used to manually validate that the quality score computed
+# by `dbtcov scan` matches what is expected by the unit tests in
+# tests/unit/test_quality_score.py.
+#
+# Run:  dbtcov scan --path tests/fixtures/quality_score_scenarios
+#
+# ── Rules disabled in this fixture ──────────────────────────────────────────
+# G001  (no meta.owner) — fires on every model; not relevant to score tests
+# Q002  (no primary key) — fires when meta.primary_key absent; not relevant
+# Q004  (no description) — captured via doc_coverage metric instead
+# R003  (single-use CTE) — refactoring hint, not a score scenario
+#
+# ── Active rules ─────────────────────────────────────────────────────────────
+# Q001  (SELECT *) — tier2 by default, fires on model_with_tier1_violations
+#                    and model_high_complexity
+# Q003  (high cyclomatic complexity) — tier2, fires on model_high_complexity
+#
+# ── Expected per-model quality scores (with rules above) ────────────────────
+#   model_perfect             → 100  (no violations, full doc+test)
+#   model_no_test             →  75  (no_test=25)
+#   model_no_doc              →  85  (doc=15)
+#   model_no_test_no_doc      →  60  (no_test=25 + doc=15)
+#   model_trivial_tests_only  → 100  (YAML tests present → no_test=0)
+#   model_partial_doc         →  91  (doc=9: model desc + 1/4 columns → doc_ratio=0.4 → round(0.6×15)=9)
+#   model_with_tier1_violations →  97  (Q001 fires → tier2=3)
+#   model_high_complexity     →  94  (Q001 + Q003 → tier2=3+3=6)
+
+version: 1
+
+dialect: postgres
+
+render:
+  mode: MOCK
+
+confidence_threshold: 0.7
+
+rules:
+  # Disable rules that produce noise unrelated to score scenarios
+  G001:
+    enabled: false
+  Q002:
+    enabled: false
+  Q004:
+    enabled: false
+  R003:
+    enabled: false
+
+# Keep the original scoring model for these scenario tests.
+# Meaningful and unit_cc penalties require adapter data (test_results)
+# which this fixture does not produce.
+scoring:
+  column_test_penalty_max: 25
+  meaningful_column_penalty_max: 0
+  unit_cc_penalty_max: 0

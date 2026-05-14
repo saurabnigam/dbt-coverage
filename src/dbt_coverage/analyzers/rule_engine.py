@@ -144,11 +144,11 @@ class Engine:
                 for nid, node in parsed_nodes.items():
                     attempted += 1
                     if getattr(rule, "requires_ast", True):
-                        if not node.parse_success:
-                            _skip(rid, CheckSkipReason.PARSE_FAILED, node_id=nid)
-                            continue
                         if node.render_uncertain:
                             _skip(rid, CheckSkipReason.RENDER_UNCERTAIN, node_id=nid)
+                            continue
+                        if not node.parse_success:
+                            _skip(rid, CheckSkipReason.PARSE_FAILED, node_id=nid)
                             continue
                     ctx = RuleContext(
                         node=node,

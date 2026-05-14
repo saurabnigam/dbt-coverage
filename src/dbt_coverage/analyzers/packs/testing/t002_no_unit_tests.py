@@ -44,8 +44,9 @@ class T002NoUnitTestsRule(BaseRule):
         if not ctx.node_id.startswith("model."):
             return
 
-        if _below_1_8(ctx.dbt_version):
-            # Skip quietly; test_unit dimension still shows 0/N with a note.
+        if ctx.dbt_version is None or _below_1_8(ctx.dbt_version):
+            # Skip when version is unknown (can't confirm unit-test support)
+            # or explicitly below 1.8.
             return
 
         # Ignore staging layer by naming convention — unit tests shine on

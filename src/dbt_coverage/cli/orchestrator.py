@@ -106,7 +106,7 @@ def scan(
     adapter_findings = _collect_findings(adapter_results)
     test_results = _collect_test_results(adapter_results)
 
-    rule_classes = discover_rules()
+    rule_classes = discover_rules(project_root=project_root)
     registered = apply_overrides(rule_classes, config)
 
     dbt_version = _find_dbt_version(adapter_invocations)
@@ -156,7 +156,7 @@ def scan(
     coverage = compute_all(agg_ctx, enabled=enabled_dims)
 
     model_summaries = _build_model_summaries(
-        project, parsed_nodes, findings, coverage, test_results, engine_skips
+        project, parsed_nodes, findings, coverage, test_results, engine_skips, config
     )
 
     render_stats = RenderStats(
@@ -243,16 +243,26 @@ def _build_model_summaries(
     coverage: list[Any],
     test_results: list[Any] | None = None,
     check_skips: list[Any] | None = None,
+    cfg: Any = None,
 ) -> list[ModelSummary]:
     """Build one ModelSummary per model, sorted worst-score-first."""
     # Coverage look-ups
     test_per_node: dict[str, tuple[int, int]] = {}
     doc_per_node: dict[str, tuple[int, int]] = {}
+    column_test_per_node: dict[str, tuple[int, int]] = {}
+    column_test_meaningful_per_node: dict[str, tuple[int, int]] = {}
+    test_unit_wcc_per_node: dict[str, tuple[int, int]] = {}
     for m in coverage:
         if m.dimension == "test":
             test_per_node = dict(m.per_node)
         elif m.dimension == "doc":
             doc_per_node = dict(m.per_node)
+        elif m.dimension == "column_test":
+            column_test_per_node = dict(m.per_node)
+        elif m.dimension == "column_test_meaningful":
+            column_test_meaningful_per_node = dict(m.per_node)
+        elif m.dimension == "test_unit_weighted_cc":
+            test_unit_wcc_per_node = dict(m.per_node)
 
     # Findings grouped by node_id
     from collections import defaultdict
@@ -300,33 +310,62 @@ def _build_model_summaries(
         uncertain = node.render_uncertain if node else False
 
         tc_vals = test_per_node.get(nid, (0, 1))
-        test_covered = tc_vals[0] > 0
+        # When test-result artifacts are available use the actual executed-test
+        # count as ground truth (catches models with YAML declarations but zero
+        # tests that ever ran).  Fall back to the YAML-declaration check only
+        # when no test results were loaded at all.
+        _actual_tests = data_count_by_node.get(nid, 0) + unit_count_by_node.get(nid, 0)
+        if test_results:
+            test_covered = _actual_tests > 0
+        else:
+            test_covered = tc_vals[0] > 0
 
         doc_vals = doc_per_node.get(nid, (0, 1))
         doc_ratio = (doc_vals[0] / doc_vals[1]) if doc_vals[1] > 0 else 0.0
+
+        # Column-level coverage ratios for new dims
+        # Default (1, 1) means "not tracked by this dimension" → no penalty
+        col_vals = column_test_per_node.get(nid, (1, 1))
+        col_ratio = (col_vals[0] / col_vals[1]) if col_vals[1] > 0 else 1.0
+        col_mean_vals = column_test_meaningful_per_node.get(nid, (1, 1))
+        col_mean_ratio = (col_mean_vals[0] / col_mean_vals[1]) if col_mean_vals[1] > 0 else 1.0
+        unit_wcc_vals = test_unit_wcc_per_node.get(nid, (1, 1))
+        unit_cc_ratio = (unit_wcc_vals[0] / unit_wcc_vals[1]) if unit_wcc_vals[1] > 0 else 1.0
 
         t1 = sorted(tier1_by_node.get(nid, set()))
         t2 = sorted(tier2_by_node.get(nid, set()))
 
         # SPEC-26/27/28/33 — graduated 0-100 score. Each axis is bounded so a
         # single bad dimension can't drive score negative before clamping.
+        # Penalty weights are read from cfg.scoring so they're user-configurable.
+        sc = cfg.scoring
         score = 100
-        if not test_covered:
-            score -= 25
-        # Smooth doc penalty: fully documented = 0 hit, 0% = -15.
-        score -= int(round(max(0.0, (1.0 - doc_ratio)) * 15))
-        score -= min(40, 10 * len(t1))
-        score -= min(20, 3 * len(t2))
-        # Unexecuted tests are a risk signal even when T001 is demoted.
-        score -= min(15, 5 * unexec_count_by_node.get(nid, 0))
+        # Graduated column_test penalty replaces binary no_test penalty:
+        # 0% column coverage → full penalty; 100% → no penalty
+        _p_test_col = int(round((1.0 - col_ratio) * sc.column_test_penalty_max))
+        # Meaningful column test coverage gap penalty
+        _p_meaningful = int(round((1.0 - col_mean_ratio) * sc.meaningful_column_penalty_max))
+        # Unit-test CC-weighted coverage gap penalty
+        _p_unit_cc = int(round((1.0 - unit_cc_ratio) * sc.unit_cc_penalty_max))
+        # Smooth doc penalty: fully documented = 0 hit, 0% = full penalty.
+        _p_doc = int(round(max(0.0, (1.0 - doc_ratio)) * sc.doc_penalty_max))
+        _p_t1 = min(sc.tier1_cap, sc.tier1_per_finding * len(t1))
+        _p_t2 = min(sc.tier2_cap, sc.tier2_per_finding * len(t2))
+        _unexec = unexec_count_by_node.get(nid, 0)
+        _p_unexec = min(sc.unexec_cap, sc.unexec_per_test * _unexec)
         if not parse_ok:
-            score -= 10
+            _p_parse = sc.parse_fail_penalty
         elif uncertain:
-            score -= 5
+            _p_parse = sc.parse_uncertain_penalty
+        else:
+            _p_parse = 0
         # Skipped checks indicate lost visibility, not a real defect — light
-        # penalty capped to -5 so skip-heavy projects aren't nuked.
-        if skip_count_by_node.get(nid, 0) > 0:
-            score -= min(5, skip_count_by_node[nid])
+        # penalty capped so skip-heavy projects aren't nuked.
+        # Only apply when skips are NOT already explained by parse/render issues.
+        _skip_n = skip_count_by_node.get(nid, 0)
+        _p_skips = min(sc.skip_cap, _skip_n) if _skip_n > 0 and parse_ok and not uncertain else 0
+
+        score -= _p_test_col + _p_meaningful + _p_unit_cc + _p_doc + _p_t1 + _p_t2 + _p_unexec + _p_parse + _p_skips
         score = max(0, score)
 
         file_path = str(entry.sql_file.path) if entry.sql_file else ""
@@ -339,9 +378,23 @@ def _build_model_summaries(
                 render_uncertain=uncertain,
                 test_covered=test_covered,
                 doc_ratio=round(doc_ratio, 4),
+                column_test_ratio=round(col_ratio, 4),
+                column_test_meaningful_ratio=round(col_mean_ratio, 4),
+                unit_cc_ratio=round(unit_cc_ratio, 4),
                 tier1_rules=t1,
                 tier2_rules=t2,
                 score=score,
+                score_breakdown={
+                    "column_test": _p_test_col,
+                    "meaningful_column": _p_meaningful,
+                    "unit_cc": _p_unit_cc,
+                    "doc": _p_doc,
+                    "tier1": _p_t1,
+                    "tier2": _p_t2,
+                    "unexec": _p_unexec,
+                    "parse": _p_parse,
+                    "skips": _p_skips,
+                },
                 waived_count=waived_by_node.get(nid, 0),
                 data_test_count=data_count_by_node.get(nid, 0),
                 unit_test_count=unit_count_by_node.get(nid, 0),

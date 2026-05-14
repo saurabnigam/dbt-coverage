@@ -116,6 +116,8 @@ class CoverageConfig(BaseModel):
     dimensions: list[str] | None = None
     thresholds: dict[str, CoverageThreshold] = Field(default_factory=dict)
     exemptions: CoverageExemptions = Field(default_factory=CoverageExemptions)
+    # Models with CC below this threshold are auto-covered for unit test coverage
+    unit_test_cc_threshold: int = Field(default=3, ge=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -329,6 +331,45 @@ class ArchitectureConfig(BaseModel):
     )
 
 
+class ScoringConfig(BaseModel):
+    """Configurable penalty weights for the per-model 0-100 quality score.
+
+    All fields default to the original hardcoded values so existing projects
+    are unaffected until a ``scoring:`` block is added to ``dbtcov.yml``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Penalty when a model has zero tests declared (legacy binary; replaced by column_test_penalty_max)
+    no_test_penalty: int = Field(default=25, ge=0, le=100)
+    # Maximum penalty for column-level test coverage gap (scales linearly: 0% → full penalty)
+    column_test_penalty_max: int = Field(default=25, ge=0, le=100)
+    # Maximum penalty for meaningful column test coverage gap
+    meaningful_column_penalty_max: int = Field(default=10, ge=0, le=100)
+    # Maximum penalty for unit test CC-weighted coverage gap
+    unit_cc_penalty_max: int = Field(default=10, ge=0, le=100)
+    # Maximum penalty for documentation gap (scales linearly: 0% doc → full penalty)
+    doc_penalty_max: int = Field(default=15, ge=0, le=100)
+    # Penalty per Tier-1 (TIER_1_ENFORCED) finding
+    tier1_per_finding: int = Field(default=10, ge=0, le=100)
+    # Maximum total penalty from Tier-1 findings
+    tier1_cap: int = Field(default=40, ge=0, le=100)
+    # Penalty per Tier-2 (TIER_2_WARN) finding
+    tier2_per_finding: int = Field(default=3, ge=0, le=100)
+    # Maximum total penalty from Tier-2 findings
+    tier2_cap: int = Field(default=20, ge=0, le=100)
+    # Penalty per test that was declared but not executed
+    unexec_per_test: int = Field(default=5, ge=0, le=100)
+    # Maximum total penalty from unexecuted tests
+    unexec_cap: int = Field(default=15, ge=0, le=100)
+    # Penalty when SQL parsing failed entirely
+    parse_fail_penalty: int = Field(default=10, ge=0, le=100)
+    # Penalty when SQL parse is uncertain (Jinja unresolved)
+    parse_uncertain_penalty: int = Field(default=5, ge=0, le=100)
+    # Maximum penalty from skipped rule checks (only applied when parse succeeded)
+    skip_cap: int = Field(default=5, ge=0, le=100)
+
+
 class DbtcovConfig(BaseModel):
     """Top-level config. SPEC-02 §4.2 with extensions for SPEC-11 gate fields."""
 
@@ -341,6 +382,7 @@ class DbtcovConfig(BaseModel):
     rules: dict[str, RuleOverride] = Field(default_factory=dict)
     coverage: CoverageConfig = Field(default_factory=CoverageConfig)
     complexity: ComplexityConfig = Field(default_factory=ComplexityConfig)
+    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     adapters: dict[str, AdapterConfigYaml] = Field(default_factory=dict)
     baseline: BaselineConfig = Field(default_factory=BaselineConfig)
     gate: GateConfig = Field(default_factory=GateConfig)

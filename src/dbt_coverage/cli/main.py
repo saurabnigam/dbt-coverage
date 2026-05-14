@@ -9,6 +9,7 @@ from .commands.gate import gate_cmd
 from .commands.init import init_cmd
 from .commands.models import models_cmd
 from .commands.scan import scan_cmd
+from .commands.ui import ui_cmd
 
 
 @click.group(help="dbtcov — Data Quality Control Plane for dbt projects.")
@@ -22,6 +23,7 @@ cli.add_command(scan_cmd)
 cli.add_command(gate_cmd)
 cli.add_command(models_cmd)
 cli.add_command(baseline_cmd)
+cli.add_command(ui_cmd)
 
 
 def main() -> None:

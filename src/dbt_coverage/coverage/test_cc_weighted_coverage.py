@@ -81,10 +81,8 @@ def compute_test_cc_weighted_coverage(
 
 
 def _is_model(node: ParsedNode, node_id: str | None) -> bool:
-    if node_id and node_id.startswith("model."):
-        return True
-    nid = node.node_id or ""
-    return nid.startswith("model.") or True
+    nid = node_id or node.node_id or ""
+    return nid.startswith("model.")
 
 
 _STATUS_RANK: dict[TestStatus, int] = {

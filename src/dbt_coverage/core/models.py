@@ -20,7 +20,7 @@ from .enums import (
 )
 from .test_result import TestResult
 
-_APPROX_RATIO_DIMENSIONS = {"test_weighted_cc"}
+_APPROX_RATIO_DIMENSIONS = {"test_weighted_cc", "test_unit_weighted_cc"}
 
 
 class Suppression(BaseModel):
@@ -91,6 +91,9 @@ class CoverageMetric(BaseModel):
         "test_meaningful",
         "test_weighted_cc",
         "test_unit",
+        "column_test",
+        "column_test_meaningful",
+        "test_unit_weighted_cc",
         "complexity",
     ]
     covered: int = Field(ge=0)
@@ -132,12 +135,12 @@ class RenderStats(BaseModel):
 class ModelSummary(BaseModel):
     """Per-model assessment row.  Included in ScanResult.model_summaries.
 
-    Score (0–100) is a simple penalty model:
-      -30  no test declared anywhere in schema.yml
-      -20  doc coverage for this model < 50 %
-      -30  any TIER_1_ENFORCED finding (excluding suppressed)
-      -10  any TIER_2_WARN finding (excluding suppressed)
-      -10  SQL parse failed (AST-level checks skipped)
+    Score (0–100) is a penalty model driven by ``ScoringConfig``; see
+    ``src/dbt_coverage/utils/config.py`` for the configurable weights and
+    ``src/dbt_coverage/cli/orchestrator.py`` for the calculation.
+
+    ``score_breakdown`` is an optional dict of ``{reason: points_deducted}``
+    that lets the UI display exactly why a model lost points.
 
     ``data_test_count`` / ``unit_test_count`` / ``tests_not_run_count`` are
     populated per SPEC-32 §3. ``waived_count`` + ``skip_count`` per SPEC-31
@@ -153,9 +156,13 @@ class ModelSummary(BaseModel):
     render_uncertain: bool = False
     test_covered: bool = False
     doc_ratio: float = Field(ge=0.0, le=1.0, default=0.0)
+    column_test_ratio: float = Field(ge=0.0, le=1.0, default=0.0)
+    column_test_meaningful_ratio: float = Field(ge=0.0, le=1.0, default=0.0)
+    unit_cc_ratio: float = Field(ge=0.0, le=1.0, default=0.0)
     tier1_rules: list[str] = Field(default_factory=list)
     tier2_rules: list[str] = Field(default_factory=list)
     score: int = Field(ge=0, le=100, default=100)
+    score_breakdown: dict[str, int] = Field(default_factory=dict)
     data_test_count: int = 0
     unit_test_count: int = 0
     tests_not_run_count: int = 0
